@@ -109,9 +109,15 @@ func (c *Client) FetchMetrics() (string, error) {
 }
 
 // Ping returns true if the Traefik API is reachable.
+// Uses /api/overview rather than /ping because --ping is not enabled by default
+// in most Traefik deployments; the API endpoint is always present when --api is on.
 func (c *Client) Ping() bool {
-	resp, err := c.httpClient.Get(c.baseURL + "/ping")
-	return err == nil && resp.StatusCode == http.StatusOK
+	resp, err := c.httpClient.Get(c.baseURL + "/api/overview")
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 func fetchJSON[T any](c *Client, path string) (*T, error) {
