@@ -323,8 +323,8 @@ function renderPulse(alerts, metricsEnabled) {
 
   container.innerHTML = alerts.map(a => {
     const pct = (a.error_rate * 100).toFixed(1);
-    const pct4 = a.total ? ((a.count_4xx / a.total) * 100).toFixed(1) : '0.0';
-    const pct5 = a.total ? ((a.count_5xx / a.total) * 100).toFixed(1) : '0.0';
+    const pct4 = a.total_requests ? ((a.count_4xx / a.total_requests) * 100).toFixed(1) : '0.0';
+    const pct5 = a.total_requests ? ((a.count_5xx / a.total_requests) * 100).toFixed(1) : '0.0';
     const color = a.error_rate >= 0.25 ? 'bg-red-600' : 'bg-amber-500';
     return `
       <div class="rounded-lg border border-gray-800 bg-gray-900 px-4 py-3">

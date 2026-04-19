@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/janus-project/janus/domain"
+	traefikinfra "github.com/janus-project/janus/internal/infrastructure/traefik"
 	"github.com/janus-project/janus/internal/pulse"
 	"github.com/janus-project/janus/internal/security"
-	"github.com/janus-project/janus/internal/traefik"
 	janusWeb "github.com/janus-project/janus/internal/web"
 )
 
@@ -35,7 +35,25 @@ type statusResponse struct {
 	RedFlags       []routerAuditDTO `json:"red_flags"`
 	PulseAlerts    []pulseAlertDTO  `json:"pulse_alerts"`
 	MetricsEnabled bool             `json:"metrics_enabled"`
+	Overview       *overviewDTO     `json:"overview,omitempty"`
 	Error          string           `json:"error,omitempty"`
+}
+
+type overviewDTO struct {
+	HTTP      httpStatsDTO `json:"http"`
+	Providers []string     `json:"providers"`
+}
+
+type httpStatsDTO struct {
+	Routers     entityStatsDTO `json:"routers"`
+	Services    entityStatsDTO `json:"services"`
+	Middlewares entityStatsDTO `json:"middlewares"`
+}
+
+type entityStatsDTO struct {
+	Total    int `json:"total"`
+	Warnings int `json:"warnings"`
+	Errors   int `json:"errors"`
 }
 
 type routerAuditDTO struct {
@@ -63,7 +81,7 @@ type pulseAlertDTO struct {
 
 func main() {
 	cfg := loadConfig()
-	client := traefik.NewClient(cfg.TraefikURL)
+	client := traefikinfra.NewClient(cfg.TraefikURL)
 	auditor := security.NewAuditor()
 
 	sub, err := fs.Sub(janusWeb.StaticFS, "static")
@@ -96,7 +114,7 @@ func main() {
 
 // buildStatus fetches data from Traefik, builds a NetworkSnapshot, runs the
 // Auditor, and converts the AuditReport to the API response DTO.
-func buildStatus(client *traefik.Client, auditor domain.Auditor, alertThreshold float64) statusResponse {
+func buildStatus(client *traefikinfra.Client, auditor domain.Auditor, alertThreshold float64) statusResponse {
 	resp := statusResponse{
 		Timestamp:   time.Now().UTC(),
 		RedFlags:    []routerAuditDTO{},
@@ -115,6 +133,8 @@ func buildStatus(client *traefik.Client, auditor domain.Auditor, alertThreshold 
 	overview, err := client.FetchOverview()
 	if err != nil {
 		log.Printf("overview: %v", err)
+	} else if overview != nil {
+		resp.Overview = toOverviewDTO(overview)
 	}
 
 	raw, err := client.FetchRawData()
@@ -138,7 +158,7 @@ func buildStatus(client *traefik.Client, auditor domain.Auditor, alertThreshold 
 	}
 
 	// ── Assemble snapshot and run domain Auditor ─────────────────────────
-	snapshot := traefik.ToSnapshot(raw, pulseAlerts, traefikOK)
+	snapshot := traefikinfra.ToSnapshot(raw, pulseAlerts, traefikOK)
 	report := auditor.Audit(snapshot)
 
 	resp.OverallScore = report.OverallScore
@@ -185,6 +205,17 @@ func toPulseAlertDTOs(alerts []domain.PulseAlert) []pulseAlertDTO {
 		})
 	}
 	return out
+}
+
+func toOverviewDTO(ov *traefikinfra.OverviewDTO) *overviewDTO {
+	return &overviewDTO{
+		HTTP: httpStatsDTO{
+			Routers:     entityStatsDTO{Total: ov.HTTP.Routers.Total, Warnings: ov.HTTP.Routers.Warnings, Errors: ov.HTTP.Routers.Errors},
+			Services:    entityStatsDTO{Total: ov.HTTP.Services.Total, Warnings: ov.HTTP.Services.Warnings, Errors: ov.HTTP.Services.Errors},
+			Middlewares: entityStatsDTO{Total: ov.HTTP.Middlewares.Total, Warnings: ov.HTTP.Middlewares.Warnings, Errors: ov.HTTP.Middlewares.Errors},
+		},
+		Providers: ov.Providers,
+	}
 }
 
 func loadConfig() config {
