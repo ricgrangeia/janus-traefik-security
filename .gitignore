@@ -1,5 +1,5 @@
-# compiled binary
-janus
+# compiled binary (root-level only, does not affect cmd/janus/ directory)
+/janus
 
 # real env — never commit this, use .env.example as the template
 /ROADMAP.md
