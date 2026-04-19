@@ -16,8 +16,6 @@ services:
       dockerfile: Dockerfile
     container_name: janus
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
       # Override individual vars here or via Portainer stack environment.
       TRAEFIK_API_URL: ${TRAEFIK_API_URL:-http://traefik:8080}
