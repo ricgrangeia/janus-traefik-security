@@ -21,18 +21,21 @@ type AIAuditWorker struct {
 	analyst   domain.AIAnalyst
 	threshold float64
 	interval  time.Duration
+	tracePath string
 
-	mu      sync.RWMutex
-	latest  *domain.AIInsights // nil until first successful AI run
+	mu     sync.RWMutex
+	latest *domain.AIInsights // nil until first successful AI run
 }
 
 // NewAIAuditWorker creates a worker. interval is how often the AI audit runs.
+// tracePath is the file path where AI audit traces are written (empty = disabled).
 func NewAIAuditWorker(
 	client *traefikinfra.Client,
 	auditor domain.Auditor,
 	analyst domain.AIAnalyst,
 	threshold float64,
 	interval time.Duration,
+	tracePath string,
 ) *AIAuditWorker {
 	return &AIAuditWorker{
 		client:    client,
@@ -40,6 +43,7 @@ func NewAIAuditWorker(
 		analyst:   analyst,
 		threshold: threshold,
 		interval:  interval,
+		tracePath: tracePath,
 	}
 }
 
@@ -105,20 +109,31 @@ func (w *AIAuditWorker) runOnce() {
 	if err != nil {
 		slog.Error("AI audit: analyst failed", "err", err,
 			"elapsed_ms", time.Since(start).Milliseconds())
+		// Analyst sets a Fallback AIInsights — store it so the UI shows the degraded state.
+		if enriched.AIInsights != nil {
+			w.mu.Lock()
+			w.latest = enriched.AIInsights
+			w.mu.Unlock()
+		}
 		return
 	}
 
 	if enriched.AIInsights != nil {
+		ai := enriched.AIInsights
 		slog.Info("AI audit complete",
 			"overall_score", enriched.OverallScore,
-			"tokens_used", enriched.AIInsights.TokensUsed,
-			"latency_ms", enriched.AIInsights.LatencyMs,
-			"shadow_apis", len(enriched.AIInsights.ShadowAPIs),
-			"aggressivity_alerts", len(enriched.AIInsights.AggressivityAlerts),
+			"severity", ai.Severity,
+			"prompt_tokens", ai.PromptTokens,
+			"completion_tokens", ai.CompletionTokens,
+			"latency_ms", ai.LatencyMs,
+			"shadow_apis", len(ai.ShadowAPIs),
+			"aggressivity_alerts", len(ai.AggressivityAlerts),
 		)
 
+		WriteAuditTrace(w.tracePath, enriched)
+
 		w.mu.Lock()
-		w.latest = enriched.AIInsights
+		w.latest = ai
 		w.mu.Unlock()
 	}
 }

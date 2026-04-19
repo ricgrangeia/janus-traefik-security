@@ -23,14 +23,17 @@ import (
 
 // config holds all runtime configuration sourced from environment variables.
 type config struct {
-	TraefikURL     string
-	Port           string
-	AlertThreshold float64
-	VLLMEnabled     bool
-	VLLMURL         string
-	VLLMModel       string
-	VLLMAPIKey      string
-	AIAuditInterval time.Duration
+	TraefikURL       string
+	Port             string
+	AlertThreshold   float64
+	VLLMEnabled      bool
+	VLLMURL          string
+	VLLMModel        string
+	VLLMAPIKey       string
+	AIAuditInterval  time.Duration
+	JanusEnv         string
+	KnownMiddlewares string // raw CSV, parsed before use
+	AITracePath      string
 }
 
 // ── API response DTOs ─────────────────────────────────────────────────────
@@ -92,13 +95,19 @@ type pulseAlertDTO struct {
 }
 
 type aiInsightsDTO struct {
-	Summary            string                `json:"summary"`
-	Correlations       []string              `json:"correlations"`
-	ShadowAPIs         []shadowAPIDTO        `json:"shadow_apis"`
-	AggressivityAlerts []aggressivityDTO     `json:"aggressivity_alerts"`
-	TokensUsed         int                   `json:"tokens_used"`
-	LatencyMs          int64                 `json:"latency_ms"`
-	GeneratedAt        time.Time             `json:"generated_at"`
+	Thought            string                       `json:"thought,omitempty"`
+	Summary            string                       `json:"summary"`
+	Severity           int                          `json:"severity"`
+	Correlations       []string                     `json:"correlations"`
+	ShadowAPIs         []shadowAPIDTO               `json:"shadow_apis"`
+	AggressivityAlerts []aggressivityDTO            `json:"aggressivity_alerts"`
+	RouterInsights     map[string]routerInsightDTO  `json:"router_insights,omitempty"`
+	PromptTokens       int                          `json:"prompt_tokens"`
+	CompletionTokens   int                          `json:"completion_tokens"`
+	TokensUsed         int                          `json:"tokens_used"`
+	LatencyMs          int64                        `json:"latency_ms"`
+	GeneratedAt        time.Time                    `json:"generated_at"`
+	Fallback           bool                         `json:"fallback"`
 }
 
 type shadowAPIDTO struct {
@@ -112,6 +121,13 @@ type aggressivityDTO struct {
 	Reasoning   string `json:"reasoning"`
 }
 
+type routerInsightDTO struct {
+	Analysis      string   `json:"analysis"`
+	AttackSurface string   `json:"attack_surface"`
+	Severity      int      `json:"severity"`
+	Remediation   []string `json:"remediation"`
+}
+
 func main() {
 	cfg := loadConfig()
 
@@ -119,6 +135,7 @@ func main() {
 		"port", cfg.Port,
 		"traefik_url", cfg.TraefikURL,
 		"ai_enabled", cfg.VLLMEnabled,
+		"env", cfg.JanusEnv,
 	)
 
 	client  := traefikinfra.NewClient(cfg.TraefikURL)
@@ -127,9 +144,13 @@ func main() {
 	// ── Optional AI worker ────────────────────────────────────────────────
 	var aiWorker *app.AIAuditWorker
 	if cfg.VLLMEnabled {
-		llmClient := llm.NewClient(cfg.VLLMURL, cfg.VLLMModel, cfg.VLLMAPIKey)
-		analyst   := llm.NewAnalyst(llmClient)
-		aiWorker   = app.NewAIAuditWorker(client, auditor, analyst, cfg.AlertThreshold, cfg.AIAuditInterval)
+		knownMiddlewares := app.ParseKnownMiddlewares(cfg.KnownMiddlewares)
+		llmClient        := llm.NewClient(cfg.VLLMURL, cfg.VLLMModel, cfg.VLLMAPIKey)
+		analyst          := llm.NewAnalyst(llmClient, cfg.JanusEnv, knownMiddlewares)
+		aiWorker          = app.NewAIAuditWorker(
+			client, auditor, analyst,
+			cfg.AlertThreshold, cfg.AIAuditInterval, cfg.AITracePath,
+		)
 		ctx, cancel := context.WithCancel(context.Background())
 		_ = cancel // cancel on process exit (Go runtime handles SIGTERM)
 		go aiWorker.Run(ctx)
@@ -143,6 +164,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("/", http.FileServer(http.FS(sub)))
+
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -159,6 +181,32 @@ func main() {
 		resp := buildStatus(client, auditor, cfg.AlertThreshold, cfg.VLLMEnabled, latestInsights)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
 			slog.Error("encode status response", "err", err)
+		}
+	})
+
+	// GET /api/v1/ai-insights — serves the latest AI reasoning text for human review.
+	mux.HandleFunc("/api/v1/ai-insights", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+
+		if aiWorker == nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "AI features disabled — set VLLM_API_URL to enable"})
+			return
+		}
+
+		insights := aiWorker.LatestInsights()
+		if insights == nil {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		if err := json.NewEncoder(w).Encode(toAIInsightsDTO(insights)); err != nil {
+			slog.Error("encode ai-insights response", "err", err)
 		}
 	})
 
@@ -221,8 +269,8 @@ func buildStatus(
 	// Overlay AI router reasoning from the background worker's last run.
 	if latestInsights != nil {
 		for i, ra := range report.RouterAudits {
-			if reasoning, ok := latestInsights.RouterReasoning[ra.Router.Name]; ok {
-				report.RouterAudits[i].AIReasoning = reasoning
+			if ri, ok := latestInsights.RouterInsights[ra.Router.Name]; ok {
+				report.RouterAudits[i].AIReasoning = ri.Analysis
 			}
 		}
 		resp.AIInsights = toAIInsightsDTO(latestInsights)
@@ -289,11 +337,27 @@ func toOverviewDTO(ov *traefikinfra.OverviewDTO) *overviewDTO {
 
 func toAIInsightsDTO(ai *domain.AIInsights) *aiInsightsDTO {
 	dto := &aiInsightsDTO{
-		Summary:      ai.Summary,
-		Correlations: ai.Correlations,
-		TokensUsed:   ai.TokensUsed,
-		LatencyMs:    ai.LatencyMs,
-		GeneratedAt:  ai.GeneratedAt,
+		Thought:          ai.Thought,
+		Summary:          ai.Summary,
+		Severity:         ai.Severity,
+		Correlations:     ai.Correlations,
+		PromptTokens:     ai.PromptTokens,
+		CompletionTokens: ai.CompletionTokens,
+		TokensUsed:       ai.TokensUsed,
+		LatencyMs:        ai.LatencyMs,
+		GeneratedAt:      ai.GeneratedAt,
+		Fallback:         ai.Fallback,
+	}
+	if len(ai.RouterInsights) > 0 {
+		dto.RouterInsights = make(map[string]routerInsightDTO, len(ai.RouterInsights))
+		for name, ri := range ai.RouterInsights {
+			dto.RouterInsights[name] = routerInsightDTO{
+				Analysis:      ri.Analysis,
+				AttackSurface: ri.AttackSurface,
+				Severity:      ri.Severity,
+				Remediation:   ri.Remediation,
+			}
+		}
 	}
 	for _, s := range ai.ShadowAPIs {
 		dto.ShadowAPIs = append(dto.ShadowAPIs, shadowAPIDTO{RouterName: s.RouterName, Reason: s.Reason})
@@ -312,13 +376,16 @@ func toAIInsightsDTO(ai *domain.AIInsights) *aiInsightsDTO {
 
 func loadConfig() config {
 	cfg := config{
-		TraefikURL:      getEnv("TRAEFIK_API_URL", "http://traefik:8080"),
-		Port:            getEnv("JANUS_PORT", "9090"),
-		AlertThreshold:  0.10,
-		VLLMURL:         getEnv("VLLM_API_URL", ""),
-		VLLMModel:       getEnv("VLLM_MODEL", "qwen2.5-7b-instruct"),
-		VLLMAPIKey:      getEnv("VLLM_API_KEY", ""),
-		AIAuditInterval: 60 * time.Second,
+		TraefikURL:       getEnv("TRAEFIK_API_URL", "http://traefik:8080"),
+		Port:             getEnv("JANUS_PORT", "9090"),
+		AlertThreshold:   0.10,
+		VLLMURL:          getEnv("VLLM_API_URL", ""),
+		VLLMModel:        getEnv("VLLM_MODEL", "qwen2.5-7b-instruct"),
+		VLLMAPIKey:       getEnv("VLLM_API_KEY", ""),
+		AIAuditInterval:  60 * time.Second,
+		JanusEnv:         getEnv("JANUS_ENV", "production"),
+		KnownMiddlewares: getEnv("JANUS_KNOWN_MIDDLEWARES", ""),
+		AITracePath:      getEnv("JANUS_AI_TRACE_PATH", "/logs/ai_audit_trace.json"),
 	}
 	if v := os.Getenv("JANUS_ALERT_THRESHOLD"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 && f <= 1 {

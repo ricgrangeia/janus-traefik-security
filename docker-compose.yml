@@ -1,14 +1,11 @@
 version: "3.8"
 
 # ── Networks ──────────────────────────────────────────────────────────────
-# "proxy-network" is created and owned by the existing Traefik stack.
-# Janus joins it as a read-only participant — it never manages this network.
 networks:
   proxy-network:
     external: true
   ai-network:
     external: true
-
 
 # ── Services ──────────────────────────────────────────────────────────────
 services:
@@ -20,7 +17,6 @@ services:
     container_name: janus
     restart: unless-stopped
     environment:
-      # Override individual vars here or via Portainer stack environment.
       TRAEFIK_API_URL: ${TRAEFIK_API_URL:-http://traefik:8080}
       JANUS_PORT: ${JANUS_PORT:-9090}
       JANUS_ALERT_THRESHOLD: ${JANUS_ALERT_THRESHOLD:-0.10}
@@ -29,8 +25,16 @@ services:
       VLLM_MODEL: ${VLLM_MODEL:-qwen2.5-7b-instruct}
       VLLM_API_KEY: ${VLLM_API_KEY:-}
       JANUS_AI_INTERVAL: ${JANUS_AI_INTERVAL:-60}
+      # Environment label sent to AI for context ("production", "staging", etc.)
+      JANUS_ENV: ${JANUS_ENV:-production}
+      # Comma-separated list of middleware names considered "trusted/secure".
+      JANUS_KNOWN_MIDDLEWARES: ${JANUS_KNOWN_MIDDLEWARES:-traefik-auth,authentik,crowdsec}
+      # Path inside the container where AI audit traces are written.
+      JANUS_AI_TRACE_PATH: ${JANUS_AI_TRACE_PATH:-/logs/ai_audit_trace.json}
     ports:
       - "${JANUS_PORT:-9090}:${JANUS_PORT:-9090}"
+    volumes:
+      - /opt/janus/logs:/logs
     networks:
       - proxy-network
       - ai-network
