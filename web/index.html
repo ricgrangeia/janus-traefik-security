@@ -210,35 +210,53 @@ function renderFlags(flags) {
   const container = document.getElementById('flags-container');
   const counter   = document.getElementById('flags-count');
 
-  const bad = flags.filter(f => f.issues?.length);
+  const redirects = flags.filter(f => f.is_redirect);
+  const bad       = flags.filter(f => !f.is_redirect && f.issues?.length);
+  const clean     = flags.filter(f => !f.is_redirect && !f.issues?.length);
+
   counter.textContent = bad.length
     ? `${bad.length} router${bad.length > 1 ? 's' : ''} with issues`
-    : 'All routers clean';
+    : 'All service routers clean';
+
+  const parts = [];
 
   if (!bad.length) {
-    container.innerHTML = cleanState('No security issues detected across all routers.');
-    return;
+    parts.push(cleanState('No security issues detected across all service routers.'));
+  } else {
+    // Sort worst first.
+    bad.sort((a, b) => a.score - b.score);
+    parts.push(bad.map(f => `
+      <div class="rounded-lg border ${borderClass(f.score)} bg-gray-900 px-4 py-3">
+        <div class="flex items-start justify-between gap-4">
+          <div class="min-w-0">
+            <p class="text-sm font-semibold text-white truncate">${esc(f.router_name)}</p>
+            <p class="text-xs text-gray-500 mt-0.5 truncate">${esc(f.rule)}</p>
+          </div>
+          <span class="shrink-0 text-xs font-bold px-2 py-0.5 rounded ${scoreBadge(f.score)}">${f.score}/100</span>
+        </div>
+        <ul class="mt-2 space-y-1">
+          ${(f.issues ?? []).map(i => `
+            <li class="text-xs flex items-start gap-2 text-red-300">
+              <span class="mt-0.5 shrink-0">⚠</span>${esc(i)}
+            </li>`).join('')}
+        </ul>
+      </div>`).join(''));
   }
 
-  // Sort worst first.
-  bad.sort((a, b) => a.score - b.score);
+  // Redirect routers — shown collapsed so they don't pollute the view.
+  if (redirects.length) {
+    parts.push(`
+      <details class="rounded-lg border border-gray-800 bg-gray-900 px-4 py-2 text-xs text-gray-500 cursor-pointer">
+        <summary class="select-none">
+          ↪ ${redirects.length} HTTP→HTTPS redirect router${redirects.length > 1 ? 's' : ''} (excluded from score)
+        </summary>
+        <ul class="mt-2 space-y-1 pl-2">
+          ${redirects.map(f => `<li class="text-gray-600">${esc(f.router_name)} — ${esc(f.rule)}</li>`).join('')}
+        </ul>
+      </details>`);
+  }
 
-  container.innerHTML = bad.map(f => `
-    <div class="rounded-lg border ${borderClass(f.score)} bg-gray-900 px-4 py-3">
-      <div class="flex items-start justify-between gap-4">
-        <div class="min-w-0">
-          <p class="text-sm font-semibold text-white truncate">${esc(f.router_name)}</p>
-          <p class="text-xs text-gray-500 mt-0.5 truncate">${esc(f.rule)}</p>
-        </div>
-        <span class="shrink-0 text-xs font-bold px-2 py-0.5 rounded ${scoreBadge(f.score)}">${f.score}/100</span>
-      </div>
-      <ul class="mt-2 space-y-1">
-        ${(f.issues ?? []).map(i => `
-          <li class="text-xs flex items-start gap-2 text-red-300">
-            <span class="mt-0.5 shrink-0">⚠</span>${esc(i)}
-          </li>`).join('')}
-      </ul>
-    </div>`).join('');
+  container.innerHTML = parts.join('');
 }
 
 // ── Pulse ────────────────────────────────────────────────────────────────

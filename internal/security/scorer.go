@@ -13,36 +13,49 @@ var authMiddlewareTypes = map[string]bool{
 	"forwardauth": true,
 }
 
+// secureEntrypoints are entrypoint names that are expected to carry TLS.
+var secureEntrypoints = map[string]bool{
+	"websecure": true,
+	"https":     true,
+	"443":       true,
+}
+
 // RedFlag describes a router with security issues.
 type RedFlag struct {
-	RouterName string   `json:"router_name"`
-	Rule       string   `json:"rule"`
-	Provider   string   `json:"provider"`
-	Issues     []string `json:"issues"`
-	Score      int      `json:"score"` // 0 (critical) – 100 (clean)
+	RouterName  string   `json:"router_name"`
+	Rule        string   `json:"rule"`
+	Provider    string   `json:"provider"`
+	Issues      []string `json:"issues"`
+	Score       int      `json:"score"`       // 0 (critical) – 100 (clean)
+	IsRedirect  bool     `json:"is_redirect"` // true = HTTP→HTTPS redirect router, scoring skipped
 }
 
 // Analyze scans all routers and returns per-router red flags plus an
-// overall score (0–100). Routers with internal/dashboard providers are
-// skipped — they are infrastructure, not user-facing routes.
+// overall score (0–100). Internal and redirect-only routers are excluded
+// from the overall score — they are infrastructure, not service endpoints.
 func Analyze(data *traefik.RawData) ([]RedFlag, int) {
 	var flags []RedFlag
 	totalScore := 0
+	scoredCount := 0
 
 	for name, router := range data.Routers {
-		// Skip Traefik's own internal routers.
 		if strings.HasSuffix(name, "@internal") {
 			continue
 		}
 
 		flag := scoreRouter(name, router, data.Middlewares)
 		flags = append(flags, flag)
-		totalScore += flag.Score
+
+		// Redirect routers are shown in the UI but don't pollute the overall score.
+		if !flag.IsRedirect {
+			totalScore += flag.Score
+			scoredCount++
+		}
 	}
 
 	overall := 100
-	if len(flags) > 0 {
-		overall = totalScore / len(flags)
+	if scoredCount > 0 {
+		overall = totalScore / scoredCount
 	}
 
 	return flags, overall
@@ -56,12 +69,18 @@ func scoreRouter(name string, r traefik.Router, middlewares map[string]traefik.M
 		Score:      100,
 	}
 
-	onPublicEntrypoint := isPublicEntrypoint(r.EntryPoints)
+	// A router whose only job is redirecting HTTP→HTTPS is infrastructure.
+	// It has no TLS by design and needs no auth — skip security scoring.
+	if isRedirectRouter(r, middlewares) {
+		flag.IsRedirect = true
+		return flag
+	}
 
 	// ── TLS check ──────────────────────────────────────────────────────────
-	// A router on a "secure" entrypoint should always have TLS configured.
-	if onPublicEntrypoint && r.TLS == nil {
-		flag.Issues = append(flag.Issues, "No TLS configured on public entrypoint")
+	// Only flag TLS absence on routers bound to a secure entrypoint (websecure).
+	// Routers on the plain `web` entrypoint are not expected to carry TLS.
+	if isSecureEntrypoint(r.EntryPoints) && r.TLS == nil {
+		flag.Issues = append(flag.Issues, "No TLS configured on secure entrypoint (websecure)")
 		flag.Score -= 30
 	}
 
@@ -93,14 +112,26 @@ func scoreRouter(name string, r traefik.Router, middlewares map[string]traefik.M
 	return flag
 }
 
-// isPublicEntrypoint returns true when any entrypoint name suggests a
-// publicly-reachable port (web, websecure, https, 443, etc.).
-func isPublicEntrypoint(eps []string) bool {
-	public := map[string]bool{
-		"web": true, "websecure": true, "https": true, "http": true,
+// isRedirectRouter returns true when every middleware on the router is a
+// redirectscheme — meaning the router's sole purpose is HTTP→HTTPS redirection.
+func isRedirectRouter(r traefik.Router, middlewares map[string]traefik.Middleware) bool {
+	if len(r.Middlewares) == 0 {
+		return false
 	}
+	for _, ref := range r.Middlewares {
+		mw, ok := resolveMiddleware(ref, middlewares)
+		if !ok || strings.ToLower(mw.Type) != "redirectscheme" {
+			return false
+		}
+	}
+	return true
+}
+
+// isSecureEntrypoint returns true when the router is bound to an entrypoint
+// that is expected to carry TLS (websecure / https / 443).
+func isSecureEntrypoint(eps []string) bool {
 	for _, ep := range eps {
-		if public[strings.ToLower(ep)] {
+		if secureEntrypoints[strings.ToLower(ep)] {
 			return true
 		}
 	}
@@ -109,7 +140,6 @@ func isPublicEntrypoint(eps []string) bool {
 
 // hasMiddlewareOfType checks whether the router's middleware list contains
 // at least one middleware whose type is in the target set.
-// Router middleware references may or may not carry the @provider suffix.
 func hasMiddlewareOfType(refs []string, all map[string]traefik.Middleware, types map[string]bool) bool {
 	for _, ref := range refs {
 		mw, ok := resolveMiddleware(ref, all)
@@ -129,7 +159,6 @@ func resolveMiddleware(ref string, all map[string]traefik.Middleware) (traefik.M
 	if mw, ok := all[ref]; ok {
 		return mw, true
 	}
-	// Strip provider suffix from the ref and compare against base names.
 	base := strings.SplitN(ref, "@", 2)[0]
 	for key, mw := range all {
 		if strings.SplitN(key, "@", 2)[0] == base {
