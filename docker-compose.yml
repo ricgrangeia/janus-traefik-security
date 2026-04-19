@@ -25,3 +25,8 @@ services:
       - "${JANUS_PORT:-9090}:${JANUS_PORT:-9090}"
     networks:
       - proxy-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
