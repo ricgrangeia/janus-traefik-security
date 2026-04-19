@@ -205,6 +205,32 @@ function scoreColor(s) {
   return '#ef4444';              // red
 }
 
+// All security checks in display order — used to show passes alongside failures.
+const ALL_CHECKS = [
+  { code: 'SEC-001', label: 'Authentication middleware',  severity: 'critical' },
+  { code: 'SEC-002', label: 'TLS on secure entrypoint',   severity: 'high'     },
+  { code: 'SEC-003', label: 'Rate limiting middleware',   severity: 'medium'   },
+  { code: 'SEC-004', label: 'IP allowlist middleware',    severity: 'low'      },
+];
+
+function routerChecklist(f) {
+  const failedCodes = new Set((f.issues ?? []).map(i => i.code));
+  return ALL_CHECKS.map(check => {
+    const failed = failedCodes.has(check.code);
+    const issue  = (f.issues ?? []).find(i => i.code === check.code);
+    return failed
+      ? `<li class="text-xs flex items-center gap-2 text-red-300">
+           <span class="shrink-0">⚠</span>
+           <span>${esc(issue?.description ?? check.label)}</span>
+           <span class="ml-auto shrink-0 text-gray-600 uppercase tracking-wide text-[10px]">${esc(check.severity)}</span>
+         </li>`
+      : `<li class="text-xs flex items-center gap-2 text-emerald-500">
+           <span class="shrink-0">✓</span>
+           <span>${esc(check.label)}</span>
+         </li>`;
+  }).join('');
+}
+
 // ── Red flags ───────────────────────────────────────────────────────────
 function renderFlags(flags) {
   const container = document.getElementById('flags-container');
@@ -220,7 +246,7 @@ function renderFlags(flags) {
 
   const parts = [];
 
-  // Bad routers — sorted worst first.
+  // Bad routers — sorted worst first, full checklist shown.
   bad.sort((a, b) => a.score - b.score);
   if (bad.length) {
     parts.push(bad.map(f => `
@@ -232,14 +258,7 @@ function renderFlags(flags) {
           </div>
           <span class="shrink-0 text-xs font-bold px-2 py-0.5 rounded ${scoreBadge(f.score)}">${f.score}/100</span>
         </div>
-        <ul class="mt-2 space-y-1">
-          ${(f.issues ?? []).map(i => `
-            <li class="text-xs flex items-start gap-2 text-red-300">
-              <span class="mt-0.5 shrink-0">⚠</span>
-              <span>${esc(i.description)}</span>
-              <span class="ml-auto shrink-0 text-gray-600 uppercase tracking-wide">${esc(i.severity)}</span>
-            </li>`).join('')}
-        </ul>
+        <ul class="mt-2 space-y-1">${routerChecklist(f)}</ul>
       </div>`).join(''));
   }
 
