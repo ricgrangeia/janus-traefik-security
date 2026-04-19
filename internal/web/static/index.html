@@ -235,7 +235,9 @@ function renderFlags(flags) {
         <ul class="mt-2 space-y-1">
           ${(f.issues ?? []).map(i => `
             <li class="text-xs flex items-start gap-2 text-red-300">
-              <span class="mt-0.5 shrink-0">⚠</span>${esc(i)}
+              <span class="mt-0.5 shrink-0">⚠</span>
+              <span>${esc(i.description)}</span>
+              <span class="ml-auto shrink-0 text-gray-600 uppercase tracking-wide">${esc(i.severity)}</span>
             </li>`).join('')}
         </ul>
       </div>`).join(''));
