@@ -6,6 +6,9 @@ version: "3.8"
 networks:
   proxy-network:
     external: true
+  ai-network:
+    external: true
+
 
 # ── Services ──────────────────────────────────────────────────────────────
 services:
@@ -21,10 +24,16 @@ services:
       TRAEFIK_API_URL: ${TRAEFIK_API_URL:-http://traefik:8080}
       JANUS_PORT: ${JANUS_PORT:-9090}
       JANUS_ALERT_THRESHOLD: ${JANUS_ALERT_THRESHOLD:-0.10}
+      # AI analyst — leave VLLM_API_URL unset to run without AI features.
+      VLLM_API_URL: ${VLLM_API_URL:-}
+      VLLM_MODEL: ${VLLM_MODEL:-qwen2.5-7b-instruct}
+      VLLM_API_KEY: ${VLLM_API_KEY:-}
+      JANUS_AI_INTERVAL: ${JANUS_AI_INTERVAL:-60}
     ports:
       - "${JANUS_PORT:-9090}:${JANUS_PORT:-9090}"
     networks:
       - proxy-network
+      - ai-network
     logging:
       driver: "json-file"
       options:

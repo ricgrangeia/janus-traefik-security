@@ -1,17 +1,21 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
 	"time"
 
 	"github.com/janus-project/janus/domain"
+	"github.com/janus-project/janus/internal/app"
 	traefikinfra "github.com/janus-project/janus/internal/infrastructure/traefik"
+	"github.com/janus-project/janus/internal/infrastructure/llm"
 	"github.com/janus-project/janus/internal/pulse"
 	"github.com/janus-project/janus/internal/security"
 	janusWeb "github.com/janus-project/janus/internal/web"
@@ -22,11 +26,15 @@ type config struct {
 	TraefikURL     string
 	Port           string
 	AlertThreshold float64
+	VLLMEnabled     bool
+	VLLMURL         string
+	VLLMModel       string
+	VLLMAPIKey      string
+	AIAuditInterval time.Duration
 }
 
 // ── API response DTOs ─────────────────────────────────────────────────────
-// These structs carry JSON tags and live in the application layer,
-// keeping the domain models free of serialisation concerns.
+// JSON tags live here — never in the domain layer.
 
 type statusResponse struct {
 	Timestamp      time.Time        `json:"timestamp"`
@@ -36,6 +44,8 @@ type statusResponse struct {
 	PulseAlerts    []pulseAlertDTO  `json:"pulse_alerts"`
 	MetricsEnabled bool             `json:"metrics_enabled"`
 	Overview       *overviewDTO     `json:"overview,omitempty"`
+	AIInsights     *aiInsightsDTO   `json:"ai_insights,omitempty"`
+	AIEnabled      bool             `json:"ai_enabled"`
 	Error          string           `json:"error,omitempty"`
 }
 
@@ -57,18 +67,20 @@ type entityStatsDTO struct {
 }
 
 type routerAuditDTO struct {
-	RouterName string     `json:"router_name"`
-	Rule       string     `json:"rule"`
-	Provider   string     `json:"provider"`
-	Issues     []issueDTO `json:"issues"`
-	Score      int        `json:"score"`
-	IsRedirect bool       `json:"is_redirect"`
+	RouterName  string     `json:"router_name"`
+	Rule        string     `json:"rule"`
+	Provider    string     `json:"provider"`
+	Issues      []issueDTO `json:"issues"`
+	Score       int        `json:"score"`
+	IsRedirect  bool       `json:"is_redirect"`
+	AIReasoning string     `json:"ai_reasoning,omitempty"`
 }
 
 type issueDTO struct {
 	Code        string `json:"code"`
 	Description string `json:"description"`
 	Severity    string `json:"severity"`
+	AIReasoning string `json:"ai_reasoning,omitempty"`
 }
 
 type pulseAlertDTO struct {
@@ -79,11 +91,51 @@ type pulseAlertDTO struct {
 	ErrorRate   float64 `json:"error_rate"`
 }
 
+type aiInsightsDTO struct {
+	Summary            string                `json:"summary"`
+	Correlations       []string              `json:"correlations"`
+	ShadowAPIs         []shadowAPIDTO        `json:"shadow_apis"`
+	AggressivityAlerts []aggressivityDTO     `json:"aggressivity_alerts"`
+	TokensUsed         int                   `json:"tokens_used"`
+	LatencyMs          int64                 `json:"latency_ms"`
+	GeneratedAt        time.Time             `json:"generated_at"`
+}
+
+type shadowAPIDTO struct {
+	RouterName string `json:"router_name"`
+	Reason     string `json:"reason"`
+}
+
+type aggressivityDTO struct {
+	ServiceName string `json:"service_name"`
+	Assessment  string `json:"assessment"`
+	Reasoning   string `json:"reasoning"`
+}
+
 func main() {
 	cfg := loadConfig()
-	client := traefikinfra.NewClient(cfg.TraefikURL)
+
+	slog.Info("Janus starting",
+		"port", cfg.Port,
+		"traefik_url", cfg.TraefikURL,
+		"ai_enabled", cfg.VLLMEnabled,
+	)
+
+	client  := traefikinfra.NewClient(cfg.TraefikURL)
 	auditor := security.NewAuditor()
 
+	// ── Optional AI worker ────────────────────────────────────────────────
+	var aiWorker *app.AIAuditWorker
+	if cfg.VLLMEnabled {
+		llmClient := llm.NewClient(cfg.VLLMURL, cfg.VLLMModel, cfg.VLLMAPIKey)
+		analyst   := llm.NewAnalyst(llmClient)
+		aiWorker   = app.NewAIAuditWorker(client, auditor, analyst, cfg.AlertThreshold, cfg.AIAuditInterval)
+		ctx, cancel := context.WithCancel(context.Background())
+		_ = cancel // cancel on process exit (Go runtime handles SIGTERM)
+		go aiWorker.Run(ctx)
+	}
+
+	// ── HTTP server ───────────────────────────────────────────────────────
 	sub, err := fs.Sub(janusWeb.StaticFS, "static")
 	if err != nil {
 		log.Fatalf("embed sub-FS: %v", err)
@@ -99,26 +151,38 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 
-		resp := buildStatus(client, auditor, cfg.AlertThreshold)
+		var latestInsights *domain.AIInsights
+		if aiWorker != nil {
+			latestInsights = aiWorker.LatestInsights()
+		}
+
+		resp := buildStatus(client, auditor, cfg.AlertThreshold, cfg.VLLMEnabled, latestInsights)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("encode status: %v", err)
+			slog.Error("encode status response", "err", err)
 		}
 	})
 
 	addr := ":" + cfg.Port
-	log.Printf("Janus listening on %s  |  Traefik API: %s", addr, cfg.TraefikURL)
+	slog.Info("Janus ready", "addr", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatalf("server: %v", err)
 	}
 }
 
-// buildStatus fetches data from Traefik, builds a NetworkSnapshot, runs the
-// Auditor, and converts the AuditReport to the API response DTO.
-func buildStatus(client *traefikinfra.Client, auditor domain.Auditor, alertThreshold float64) statusResponse {
+// buildStatus runs the regular (synchronous) security audit and overlays the
+// latest AI insights from the background worker if available.
+func buildStatus(
+	client *traefikinfra.Client,
+	auditor domain.Auditor,
+	alertThreshold float64,
+	aiEnabled bool,
+	latestInsights *domain.AIInsights,
+) statusResponse {
 	resp := statusResponse{
 		Timestamp:   time.Now().UTC(),
 		RedFlags:    []routerAuditDTO{},
 		PulseAlerts: []pulseAlertDTO{},
+		AIEnabled:   aiEnabled,
 	}
 
 	traefikOK := client.Ping()
@@ -129,10 +193,9 @@ func buildStatus(client *traefikinfra.Client, auditor domain.Auditor, alertThres
 		return resp
 	}
 
-	// ── Fetch raw data ───────────────────────────────────────────────────
 	overview, err := client.FetchOverview()
 	if err != nil {
-		log.Printf("overview: %v", err)
+		slog.Warn("fetch overview failed", "err", err)
 	} else if overview != nil {
 		resp.Overview = toOverviewDTO(overview)
 	}
@@ -143,27 +206,31 @@ func buildStatus(client *traefikinfra.Client, auditor domain.Auditor, alertThres
 		return resp
 	}
 
-	// ── Pulse monitor ────────────────────────────────────────────────────
 	var pulseAlerts []domain.PulseAlert
 	metricsEnabled := overview != nil && overview.Features.Metrics != ""
 	resp.MetricsEnabled = metricsEnabled
-
 	if metricsEnabled {
-		metricsText, err := client.FetchMetrics()
-		if err != nil {
-			log.Printf("metrics: %v", err)
-		} else {
+		if metricsText, err := client.FetchMetrics(); err == nil {
 			pulseAlerts = pulse.Analyze(metricsText, alertThreshold)
 		}
 	}
 
-	// ── Assemble snapshot and run domain Auditor ─────────────────────────
 	snapshot := traefikinfra.ToSnapshot(raw, pulseAlerts, traefikOK)
-	report := auditor.Audit(snapshot)
+	report   := auditor.Audit(snapshot)
+
+	// Overlay AI router reasoning from the background worker's last run.
+	if latestInsights != nil {
+		for i, ra := range report.RouterAudits {
+			if reasoning, ok := latestInsights.RouterReasoning[ra.Router.Name]; ok {
+				report.RouterAudits[i].AIReasoning = reasoning
+			}
+		}
+		resp.AIInsights = toAIInsightsDTO(latestInsights)
+	}
 
 	resp.OverallScore = report.OverallScore
-	resp.RedFlags = toRouterAuditDTOs(report.RouterAudits)
-	resp.PulseAlerts = toPulseAlertDTOs(report.PulseAlerts)
+	resp.RedFlags     = toRouterAuditDTOs(report.RouterAudits)
+	resp.PulseAlerts  = toPulseAlertDTOs(report.PulseAlerts)
 
 	return resp
 }
@@ -174,18 +241,20 @@ func toRouterAuditDTOs(audits []domain.RouterAudit) []routerAuditDTO {
 	out := make([]routerAuditDTO, 0, len(audits))
 	for _, a := range audits {
 		dto := routerAuditDTO{
-			RouterName: a.Router.Name,
-			Rule:       a.Router.Rule,
-			Provider:   a.Router.Provider,
-			Score:      a.Score,
-			IsRedirect: a.Router.IsRedirect,
-			Issues:     make([]issueDTO, 0, len(a.Issues)),
+			RouterName:  a.Router.Name,
+			Rule:        a.Router.Rule,
+			Provider:    a.Router.Provider,
+			Score:       a.Score,
+			IsRedirect:  a.Router.IsRedirect,
+			AIReasoning: a.AIReasoning,
+			Issues:      make([]issueDTO, 0, len(a.Issues)),
 		}
 		for _, issue := range a.Issues {
 			dto.Issues = append(dto.Issues, issueDTO{
 				Code:        issue.Code,
 				Description: issue.Description,
 				Severity:    issue.Severity.String(),
+				AIReasoning: issue.AIReasoning,
 			})
 		}
 		out = append(out, dto)
@@ -218,17 +287,50 @@ func toOverviewDTO(ov *traefikinfra.OverviewDTO) *overviewDTO {
 	}
 }
 
+func toAIInsightsDTO(ai *domain.AIInsights) *aiInsightsDTO {
+	dto := &aiInsightsDTO{
+		Summary:      ai.Summary,
+		Correlations: ai.Correlations,
+		TokensUsed:   ai.TokensUsed,
+		LatencyMs:    ai.LatencyMs,
+		GeneratedAt:  ai.GeneratedAt,
+	}
+	for _, s := range ai.ShadowAPIs {
+		dto.ShadowAPIs = append(dto.ShadowAPIs, shadowAPIDTO{RouterName: s.RouterName, Reason: s.Reason})
+	}
+	for _, a := range ai.AggressivityAlerts {
+		dto.AggressivityAlerts = append(dto.AggressivityAlerts, aggressivityDTO{
+			ServiceName: a.ServiceName,
+			Assessment:  a.Assessment,
+			Reasoning:   a.Reasoning,
+		})
+	}
+	return dto
+}
+
+// ── Config ────────────────────────────────────────────────────────────────
+
 func loadConfig() config {
 	cfg := config{
-		TraefikURL:     getEnv("TRAEFIK_API_URL", "http://traefik:8080"),
-		Port:           getEnv("JANUS_PORT", "9090"),
-		AlertThreshold: 0.10,
+		TraefikURL:      getEnv("TRAEFIK_API_URL", "http://traefik:8080"),
+		Port:            getEnv("JANUS_PORT", "9090"),
+		AlertThreshold:  0.10,
+		VLLMURL:         getEnv("VLLM_API_URL", ""),
+		VLLMModel:       getEnv("VLLM_MODEL", "qwen2.5-7b-instruct"),
+		VLLMAPIKey:      getEnv("VLLM_API_KEY", ""),
+		AIAuditInterval: 60 * time.Second,
 	}
 	if v := os.Getenv("JANUS_ALERT_THRESHOLD"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 && f <= 1 {
 			cfg.AlertThreshold = f
 		}
 	}
+	if v := os.Getenv("JANUS_AI_INTERVAL"); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs >= 10 {
+			cfg.AIAuditInterval = time.Duration(secs) * time.Second
+		}
+	}
+	cfg.VLLMEnabled = cfg.VLLMURL != ""
 	return cfg
 }
 

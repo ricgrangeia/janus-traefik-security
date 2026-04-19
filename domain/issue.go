@@ -44,10 +44,13 @@ func (s Severity) ScoreDeduction() int {
 // SecurityIssue is an entity representing a detected vulnerability on a router.
 // Predefined issues are declared as package-level values so auditor
 // implementations can reference them without re-defining descriptions.
+// AIReasoning is populated asynchronously by the AI analyst background worker;
+// it is empty until the first AI audit completes.
 type SecurityIssue struct {
 	Code        string
 	Description string
 	Severity    Severity
+	AIReasoning string // contextual explanation from the AI analyst; empty if AI is offline
 }
 
 // Well-known security issues detected by the Auditor.

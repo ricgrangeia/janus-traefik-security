@@ -5,9 +5,10 @@ import "time"
 // RouterAudit holds the security audit result for a single router.
 // It is a component of the AuditReport aggregate — it has no identity of its own.
 type RouterAudit struct {
-	Router Router
-	Issues []SecurityIssue
-	Score  int // 0 (critical) – 100 (clean)
+	Router      Router
+	Issues      []SecurityIssue
+	Score       int    // 0 (critical) – 100 (clean)
+	AIReasoning string // per-router insight from the AI analyst; empty until first AI run
 }
 
 // IsClean returns true when no security issues were detected.
@@ -25,12 +26,14 @@ type PulseAlert struct {
 
 // AuditReport is the Aggregate Root produced by the Auditor domain service.
 // It represents a complete, point-in-time security assessment of the Traefik network.
+// AIInsights is populated asynchronously — it is nil until the first AI audit completes.
 type AuditReport struct {
 	GeneratedAt  time.Time
 	TraefikOK    bool
 	RouterAudits []RouterAudit
 	PulseAlerts  []PulseAlert
 	OverallScore int
+	AIInsights   *AIInsights
 	Error        string
 }
 
