@@ -1,0 +1,9 @@
+# compiled binary
+janus
+
+# real env — never commit this, use .env.example as the template
+/ROADMAP.md
+/STATUS.md
+/.env
+/.history
+/.claude

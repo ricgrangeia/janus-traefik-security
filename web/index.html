@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Janus — Traefik Security Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: { mono: ['ui-monospace', 'SFMono-Regular', 'monospace'] }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { font-family: ui-monospace, SFMono-Regular, monospace; }
+    .score-ring { stroke-dasharray: 251.2; stroke-linecap: round; transition: stroke-dashoffset 0.6s ease; }
+    @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+    .pulse-dot { animation: pulse-dot 1.5s ease-in-out infinite; }
+  </style>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen dark">
+
+<!-- ── Header ─────────────────────────────────────────────────────────── -->
+<header class="border-b border-gray-800 px-6 py-4">
+  <div class="max-w-7xl mx-auto flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <!-- Two-faced Janus icon (SVG) -->
+      <svg class="w-8 h-8 text-indigo-400" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="10" cy="16" r="8" stroke="currentColor" stroke-width="1.5" fill="none"/>
+        <circle cx="22" cy="16" r="8" stroke="currentColor" stroke-width="1.5" fill="none"/>
+        <line x1="10" y1="12" x2="10" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        <line x1="22" y1="12" x2="22" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        <path d="M7 19 Q10 22 13 19" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+        <path d="M19 19 Q22 16 25 19" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+      </svg>
+      <div>
+        <h1 class="text-lg font-bold text-white tracking-tight">JANUS</h1>
+        <p class="text-xs text-gray-500 -mt-1">Traefik Security Dashboard</p>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-6">
+      <!-- Traefik connection status -->
+      <div class="flex items-center gap-2 text-sm">
+        <span class="w-2 h-2 rounded-full pulse-dot" id="status-dot"></span>
+        <span id="status-text" class="text-gray-400">connecting…</span>
+      </div>
+      <!-- Refresh countdown -->
+      <div class="text-xs text-gray-600">
+        refresh in <span id="countdown" class="text-gray-400 font-bold">30</span>s
+      </div>
+      <button
+        onclick="refresh()"
+        class="text-xs px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 transition text-white">
+        ↻ Now
+      </button>
+    </div>
+  </div>
+</header>
+
+<!-- ── Main ───────────────────────────────────────────────────────────── -->
+<main class="max-w-7xl mx-auto px-6 py-8 space-y-10">
+
+  <!-- Error banner (hidden by default) -->
+  <div id="error-banner" class="hidden rounded-lg bg-red-950 border border-red-800 px-4 py-3 text-red-300 text-sm"></div>
+
+  <!-- ── Overview strip ──────────────────────────────────────────────── -->
+  <section id="overview" class="grid grid-cols-2 sm:grid-cols-4 gap-4"></section>
+
+  <!-- ── Security Score ──────────────────────────────────────────────── -->
+  <section>
+    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-4">Security Score</h2>
+    <div class="flex items-center gap-10">
+      <!-- Ring gauge -->
+      <div class="relative w-28 h-28 shrink-0">
+        <svg class="w-full h-full -rotate-90" viewBox="0 0 88 88">
+          <circle cx="44" cy="44" r="40" stroke="#1f2937" stroke-width="8" fill="none"/>
+          <circle id="score-ring" cx="44" cy="44" r="40"
+            stroke="#6366f1" stroke-width="8" fill="none"
+            class="score-ring" style="stroke-dashoffset:251.2"/>
+        </svg>
+        <div class="absolute inset-0 flex flex-col items-center justify-center">
+          <span id="score-value" class="text-2xl font-bold text-white">—</span>
+          <span class="text-xs text-gray-500">/100</span>
+        </div>
+      </div>
+      <!-- Score legend -->
+      <div class="space-y-1.5 text-sm">
+        <div class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span><span class="text-gray-300">70–100 Secure</span></div>
+        <div class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-amber-400"></span><span class="text-gray-300">40–69 Needs attention</span></div>
+        <div class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-red-500"></span><span class="text-gray-300">0–39 Critical</span></div>
+        <p class="text-gray-600 text-xs mt-2">Averaged across all non-internal routers.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Red Flags ───────────────────────────────────────────────────── -->
+  <section>
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest">Security Red Flags</h2>
+      <span id="flags-count" class="text-xs text-gray-600"></span>
+    </div>
+    <div id="flags-container" class="space-y-3">
+      <p class="text-gray-600 text-sm">Loading…</p>
+    </div>
+  </section>
+
+  <!-- ── Pulse Monitor ───────────────────────────────────────────────── -->
+  <section>
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest">
+        Pulse Monitor
+        <span class="ml-2 text-gray-700 normal-case font-normal">— high error rate services</span>
+      </h2>
+      <span id="metrics-badge" class="hidden text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-500">Prometheus metrics disabled</span>
+    </div>
+    <div id="pulse-container" class="space-y-3">
+      <p class="text-gray-600 text-sm">Loading…</p>
+    </div>
+  </section>
+
+</main>
+
+<footer class="mt-16 border-t border-gray-900 text-center py-4 text-xs text-gray-700">
+  Janus v0.1 — bridge between DevOps &amp; Developers
+</footer>
+
+<script>
+const REFRESH_INTERVAL = 30;
+let countdown = REFRESH_INTERVAL;
+let timer;
+
+// ── Fetch & render ──────────────────────────────────────────────────────
+async function refresh() {
+  resetCountdown();
+  try {
+    const res = await fetch('/api/status');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    render(data);
+  } catch (e) {
+    showError('Failed to reach Janus API: ' + e.message);
+  }
+}
+
+function render(d) {
+  hideError();
+  renderStatus(d.traefik_ok);
+  renderOverview(d.overview);
+  renderScore(d.overall_score);
+  renderFlags(d.red_flags ?? []);
+  renderPulse(d.pulse_alerts ?? [], d.metrics_enabled);
+  if (d.error) showError(d.error);
+}
+
+// ── Status dot ─────────────────────────────────────────────────────────
+function renderStatus(ok) {
+  const dot = document.getElementById('status-dot');
+  const text = document.getElementById('status-text');
+  dot.className = 'w-2 h-2 rounded-full pulse-dot ' + (ok ? 'bg-emerald-400' : 'bg-red-500');
+  text.textContent = ok ? 'Traefik connected' : 'Traefik unreachable';
+  text.className = 'text-sm ' + (ok ? 'text-emerald-400' : 'text-red-400');
+}
+
+// ── Overview strip ──────────────────────────────────────────────────────
+function renderOverview(ov) {
+  const el = document.getElementById('overview');
+  if (!ov) { el.innerHTML = ''; return; }
+  const h = ov.http;
+  const tiles = [
+    { label: 'Routers',     val: h.routers.total,     warn: h.routers.warnings,     err: h.routers.errors },
+    { label: 'Services',    val: h.services.total,    warn: h.services.warnings,    err: h.services.errors },
+    { label: 'Middlewares', val: h.middlewares.total, warn: h.middlewares.warnings, err: h.middlewares.errors },
+    { label: 'Providers',   val: (ov.providers ?? []).length, warn: 0, err: 0 },
+  ];
+  el.innerHTML = tiles.map(t => `
+    <div class="rounded-lg bg-gray-900 border border-gray-800 px-4 py-3">
+      <p class="text-2xl font-bold text-white">${t.val}</p>
+      <p class="text-xs text-gray-500 mt-0.5">${t.label}</p>
+      ${t.warn ? `<p class="text-xs text-amber-400 mt-1">${t.warn} warning${t.warn > 1 ? 's' : ''}</p>` : ''}
+      ${t.err  ? `<p class="text-xs text-red-400">${t.err} error${t.err > 1 ? 's' : ''}</p>` : ''}
+    </div>`).join('');
+}
+
+// ── Score ring ──────────────────────────────────────────────────────────
+function renderScore(score) {
+  const ring  = document.getElementById('score-ring');
+  const label = document.getElementById('score-value');
+
+  const circumference = 251.2;
+  const offset = circumference - (score / 100) * circumference;
+  ring.style.strokeDashoffset = offset;
+  ring.style.stroke = scoreColor(score);
+  label.textContent = score;
+  label.style.color = scoreColor(score);
+}
+
+function scoreColor(s) {
+  if (s >= 70) return '#10b981'; // emerald
+  if (s >= 40) return '#fbbf24'; // amber
+  return '#ef4444';              // red
+}
+
+// ── Red flags ───────────────────────────────────────────────────────────
+function renderFlags(flags) {
+  const container = document.getElementById('flags-container');
+  const counter   = document.getElementById('flags-count');
+
+  const bad = flags.filter(f => f.issues?.length);
+  counter.textContent = bad.length
+    ? `${bad.length} router${bad.length > 1 ? 's' : ''} with issues`
+    : 'All routers clean';
+
+  if (!bad.length) {
+    container.innerHTML = cleanState('No security issues detected across all routers.');
+    return;
+  }
+
+  // Sort worst first.
+  bad.sort((a, b) => a.score - b.score);
+
+  container.innerHTML = bad.map(f => `
+    <div class="rounded-lg border ${borderClass(f.score)} bg-gray-900 px-4 py-3">
+      <div class="flex items-start justify-between gap-4">
+        <div class="min-w-0">
+          <p class="text-sm font-semibold text-white truncate">${esc(f.router_name)}</p>
+          <p class="text-xs text-gray-500 mt-0.5 truncate">${esc(f.rule)}</p>
+        </div>
+        <span class="shrink-0 text-xs font-bold px-2 py-0.5 rounded ${scoreBadge(f.score)}">${f.score}/100</span>
+      </div>
+      <ul class="mt-2 space-y-1">
+        ${(f.issues ?? []).map(i => `
+          <li class="text-xs flex items-start gap-2 text-red-300">
+            <span class="mt-0.5 shrink-0">⚠</span>${esc(i)}
+          </li>`).join('')}
+      </ul>
+    </div>`).join('');
+}
+
+// ── Pulse ────────────────────────────────────────────────────────────────
+function renderPulse(alerts, metricsEnabled) {
+  const container = document.getElementById('pulse-container');
+  const badge     = document.getElementById('metrics-badge');
+
+  if (!metricsEnabled) {
+    badge.classList.remove('hidden');
+    container.innerHTML = `
+      <div class="rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 text-sm text-gray-500">
+        Prometheus metrics are not enabled in Traefik. Add
+        <code class="text-indigo-400">--metrics.prometheus=true</code>
+        to Traefik's command flags to activate the Pulse monitor.
+      </div>`;
+    return;
+  }
+
+  badge.classList.add('hidden');
+
+  if (!alerts.length) {
+    container.innerHTML = cleanState('All services within normal error-rate bounds.');
+    return;
+  }
+
+  alerts.sort((a, b) => b.error_rate - a.error_rate);
+
+  container.innerHTML = alerts.map(a => {
+    const pct = (a.error_rate * 100).toFixed(1);
+    const pct4 = a.total ? ((a.count_4xx / a.total) * 100).toFixed(1) : '0.0';
+    const pct5 = a.total ? ((a.count_5xx / a.total) * 100).toFixed(1) : '0.0';
+    const color = a.error_rate >= 0.25 ? 'bg-red-600' : 'bg-amber-500';
+    return `
+      <div class="rounded-lg border border-gray-800 bg-gray-900 px-4 py-3">
+        <div class="flex items-center justify-between gap-4">
+          <p class="text-sm font-semibold text-white truncate">${esc(a.service_name)}</p>
+          <span class="shrink-0 text-xs font-bold text-white px-2 py-0.5 rounded ${color}">${pct}% errors</span>
+        </div>
+        <div class="mt-2 h-1.5 rounded-full bg-gray-800 overflow-hidden">
+          <div class="h-full rounded-full ${color}" style="width:${Math.min(pct,100)}%"></div>
+        </div>
+        <div class="mt-2 flex gap-4 text-xs text-gray-500">
+          <span>Total: <strong class="text-gray-300">${fmt(a.total_requests)}</strong></span>
+          <span>4xx: <strong class="text-amber-400">${pct4}%</strong></span>
+          <span>5xx: <strong class="text-red-400">${pct5}%</strong></span>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────
+function cleanState(msg) {
+  return `<div class="rounded-lg border border-emerald-900 bg-emerald-950/40 px-4 py-3 text-sm text-emerald-400">✓ ${msg}</div>`;
+}
+function borderClass(s) {
+  if (s >= 70) return 'border-gray-800';
+  if (s >= 40) return 'border-amber-800';
+  return 'border-red-800';
+}
+function scoreBadge(s) {
+  if (s >= 70) return 'bg-emerald-900 text-emerald-300';
+  if (s >= 40) return 'bg-amber-900 text-amber-300';
+  return 'bg-red-900 text-red-300';
+}
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function fmt(n) {
+  return Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 });
+}
+function showError(msg) {
+  const b = document.getElementById('error-banner');
+  b.textContent = '⚠ ' + msg;
+  b.classList.remove('hidden');
+}
+function hideError() {
+  document.getElementById('error-banner').classList.add('hidden');
+}
+
+// ── Countdown ────────────────────────────────────────────────────────────
+function resetCountdown() {
+  countdown = REFRESH_INTERVAL;
+  clearInterval(timer);
+  timer = setInterval(() => {
+    countdown--;
+    document.getElementById('countdown').textContent = countdown;
+    if (countdown <= 0) refresh();
+  }, 1000);
+}
+
+// ── Boot ─────────────────────────────────────────────────────────────────
+refresh();
+</script>
+</body>
+</html>

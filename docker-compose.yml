@@ -1,0 +1,29 @@
+version: "3.8"
+
+# ── Networks ──────────────────────────────────────────────────────────────
+# "proxy-network" is created and owned by the existing Traefik stack.
+# Janus joins it as a read-only participant — it never manages this network.
+networks:
+  proxy-network:
+    external: true
+
+# ── Services ──────────────────────────────────────────────────────────────
+services:
+
+  janus:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: janus
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Override individual vars here or via Portainer stack environment.
+      TRAEFIK_API_URL: ${TRAEFIK_API_URL:-http://traefik:8080}
+      JANUS_PORT: ${JANUS_PORT:-9090}
+      JANUS_ALERT_THRESHOLD: ${JANUS_ALERT_THRESHOLD:-0.10}
+    ports:
+      - "${JANUS_PORT:-9090}:${JANUS_PORT:-9090}"
+    networks:
+      - proxy-network
