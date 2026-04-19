@@ -123,6 +123,20 @@
     </div>
   </section>
 
+  <!-- ── Janus-AI Insights ────────────────────────────────────────────── -->
+  <section id="ai-section">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest">
+        Janus-AI
+        <span class="ml-2 text-gray-700 normal-case font-normal">— deep-context security auditor</span>
+      </h2>
+      <span id="ai-meta" class="text-xs text-gray-600"></span>
+    </div>
+    <div id="ai-container" class="space-y-3">
+      <p class="text-gray-600 text-sm">Loading…</p>
+    </div>
+  </section>
+
 </main>
 
 <footer class="mt-16 border-t border-gray-900 text-center py-4 text-xs text-gray-700">
@@ -154,6 +168,7 @@ function render(d) {
   renderScore(d.overall_score);
   renderFlags(d.red_flags ?? []);
   renderPulse(d.pulse_alerts ?? [], d.metrics_enabled);
+  renderAI(d.ai_insights, d.ai_enabled);
   if (d.error) showError(d.error);
 }
 
@@ -342,6 +357,154 @@ function renderPulse(alerts, metricsEnabled) {
         </div>
       </div>`;
   }).join('');
+}
+
+// ── Janus-AI ─────────────────────────────────────────────────────────────
+function renderAI(ai, aiEnabled) {
+  const container = document.getElementById('ai-container');
+  const meta      = document.getElementById('ai-meta');
+
+  if (!aiEnabled) {
+    container.innerHTML = `
+      <div class="rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 text-sm text-gray-500">
+        AI analyst is disabled. Set <code class="text-indigo-400">VLLM_API_URL</code> to enable Janus-AI deep-context audits.
+      </div>`;
+    return;
+  }
+
+  if (!ai) {
+    container.innerHTML = `
+      <div class="rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 text-sm text-gray-500 animate-pulse">
+        Janus-AI is running its first audit… check back in a few seconds.
+      </div>`;
+    return;
+  }
+
+  if (ai.fallback) {
+    container.innerHTML = `
+      <div class="rounded-lg border border-amber-800 bg-gray-900 px-4 py-3 text-sm text-amber-300">
+        ⚠ AI analysis currently unavailable — showing standard heuristics only.
+        ${ai.correlations?.length ? `<p class="text-xs text-gray-500 mt-1">${esc(ai.correlations[0])}</p>` : ''}
+      </div>`;
+    return;
+  }
+
+  // Meta line: tokens + latency + generated-at
+  meta.textContent = `${ai.tokens_used ?? 0} tokens · ${ai.latency_ms ?? 0}ms · ${fmtTime(ai.generated_at)}`;
+
+  const parts = [];
+
+  // ── Summary + severity ──────────────────────────────────────────────
+  const sevColor = ai.severity >= 7 ? 'text-red-400' : ai.severity >= 4 ? 'text-amber-400' : 'text-emerald-400';
+  parts.push(`
+    <div class="rounded-lg border border-indigo-900 bg-gray-900 px-4 py-3">
+      <div class="flex items-start justify-between gap-4">
+        <p class="text-sm text-gray-200 leading-relaxed">${esc(ai.summary)}</p>
+        <div class="shrink-0 text-right">
+          <p class="text-2xl font-bold ${sevColor}">${ai.severity}<span class="text-xs text-gray-500">/10</span></p>
+          <p class="text-[10px] text-gray-600 uppercase tracking-wide">AI Severity</p>
+        </div>
+      </div>
+    </div>`);
+
+  // ── Chain-of-thought (collapsible) ──────────────────────────────────
+  if (ai.thought) {
+    parts.push(`
+      <details class="rounded-lg border border-gray-800 bg-gray-900 px-4 py-2 text-xs text-gray-500 cursor-pointer">
+        <summary class="select-none text-indigo-400 hover:text-indigo-300">⟳ AI Thought Process (chain-of-thought)</summary>
+        <p class="mt-2 text-gray-400 leading-relaxed whitespace-pre-wrap">${esc(ai.thought)}</p>
+      </details>`);
+  }
+
+  // ── Correlations ────────────────────────────────────────────────────
+  if (ai.correlations?.length) {
+    parts.push(`
+      <div class="rounded-lg border border-gray-800 bg-gray-900 px-4 py-3">
+        <p class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-2">Systemic Patterns</p>
+        <ul class="space-y-1">
+          ${ai.correlations.map(c => `
+            <li class="text-xs text-amber-300 flex gap-2">
+              <span class="shrink-0 text-amber-600">◈</span>${esc(c)}
+            </li>`).join('')}
+        </ul>
+      </div>`);
+  }
+
+  // ── Shadow APIs ─────────────────────────────────────────────────────
+  if (ai.shadow_apis?.length) {
+    parts.push(`
+      <div class="rounded-lg border border-red-900 bg-gray-900 px-4 py-3">
+        <p class="text-xs font-semibold text-red-500 uppercase tracking-widest mb-2">Shadow APIs Detected</p>
+        <ul class="space-y-2">
+          ${ai.shadow_apis.map(s => `
+            <li class="text-xs">
+              <span class="text-white font-semibold">${esc(s.router_name)}</span>
+              <span class="text-gray-500 ml-2">—</span>
+              <span class="text-gray-400 ml-1">${esc(s.reason)}</span>
+            </li>`).join('')}
+        </ul>
+      </div>`);
+  }
+
+  // ── Aggressivity alerts ─────────────────────────────────────────────
+  if (ai.aggressivity_alerts?.length) {
+    const typeColor = t => ({bot_scan:'text-red-400', bad_code:'text-amber-400', legitimate_traffic:'text-emerald-400'}[t] ?? 'text-gray-400');
+    parts.push(`
+      <div class="rounded-lg border border-gray-800 bg-gray-900 px-4 py-3">
+        <p class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-2">Traffic Classification</p>
+        <ul class="space-y-2">
+          ${ai.aggressivity_alerts.map(a => `
+            <li class="text-xs">
+              <div class="flex items-center gap-2">
+                <span class="text-white font-semibold">${esc(a.service_name)}</span>
+                <span class="px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide bg-gray-800 ${typeColor(a.assessment)}">${esc(a.assessment)}</span>
+              </div>
+              <p class="text-gray-500 mt-0.5 pl-1">${esc(a.reasoning)}</p>
+            </li>`).join('')}
+        </ul>
+      </div>`);
+  }
+
+  // ── Per-router deep insights ─────────────────────────────────────────
+  const insights = ai.router_insights;
+  if (insights && Object.keys(insights).length) {
+    const entries = Object.entries(insights).sort((a,b) => b[1].severity - a[1].severity);
+    parts.push(`
+      <div class="rounded-lg border border-gray-800 bg-gray-900 px-4 py-3">
+        <p class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">Per-Router Deep Analysis</p>
+        <div class="space-y-4">
+          ${entries.map(([name, ri]) => `
+            <div class="border-l-2 ${ri.severity >= 7 ? 'border-red-700' : ri.severity >= 4 ? 'border-amber-700' : 'border-gray-700'} pl-3">
+              <div class="flex items-center gap-2 mb-1">
+                <span class="text-sm font-semibold text-white">${esc(name)}</span>
+                <span class="text-xs px-1.5 py-0.5 rounded bg-gray-800 ${ri.severity >= 7 ? 'text-red-400' : ri.severity >= 4 ? 'text-amber-400' : 'text-emerald-400'}">${ri.severity}/10</span>
+              </div>
+              <p class="text-xs text-gray-400 mb-1">${esc(ri.analysis)}</p>
+              ${ri.attack_surface ? `
+                <details class="text-xs cursor-pointer mt-1">
+                  <summary class="text-red-400 hover:text-red-300 select-none">⚡ Attack surface</summary>
+                  <p class="text-gray-500 mt-1 pl-2">${esc(ri.attack_surface)}</p>
+                </details>` : ''}
+              ${ri.remediation?.length ? `
+                <div class="mt-1.5">
+                  <p class="text-[10px] text-gray-600 uppercase tracking-wide mb-0.5">Remediation</p>
+                  <ul class="space-y-0.5">
+                    ${ri.remediation.map(r => `<li class="text-xs text-indigo-300 font-mono">${esc(r)}</li>`).join('')}
+                  </ul>
+                </div>` : ''}
+            </div>`).join('')}
+        </div>
+      </div>`);
+  }
+
+  container.innerHTML = parts.join('');
+}
+
+function fmtTime(iso) {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleTimeString();
+  } catch { return iso; }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
