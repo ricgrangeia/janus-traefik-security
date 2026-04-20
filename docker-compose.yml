@@ -54,6 +54,7 @@ services:
       JANUS_ACCESS_LOG_PATH: ${JANUS_ACCESS_LOG_PATH:-/traefik-logs/access.log}
       # Path to MaxMind GeoLite2-City.mmdb for IP geo-enrichment (optional).
       JANUS_GEOIP_DB_PATH: ${JANUS_GEOIP_DB_PATH:-/app/data/GeoLite2-City.mmdb}
+      JANUS_ADMIN_PASSWORD_HASH: ${JANUS_ADMIN_PASSWORD_HASH}
     volumes:
       - /opt/janus/logs:/logs
       - /opt/janus/configs:/configs
