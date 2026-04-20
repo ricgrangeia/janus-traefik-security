@@ -1,8 +1,8 @@
 # Janus — Traefik Security Bridge
 
-> **Version:** 0.1.0 · **License:** MIT · **Stack:** Go · Docker · Tailwind CSS
+> **Version:** 0.8.0 · **License:** MIT · **Stack:** Go 1.22 · Docker · Tailwind CSS
 
-Janus is a lightweight Go sidecar that runs alongside Traefik and bridges the gap between **DevOps** (who configures the proxy) and **Developers** (who need to understand what is exposed and how). It surfaces security gaps and error-rate anomalies that standard server logs miss — in a single, embedded dashboard.
+Janus is a lightweight Go sidecar that runs alongside Traefik and bridges the gap between **DevOps** (who configures the proxy) and **Developers** (who need to understand what is exposed and how). It surfaces security gaps, detects active attacks, blocks hostile IPs, and delivers AI-powered threat intelligence — all from a single embedded dashboard.
 
 ---
 
@@ -10,43 +10,52 @@ Janus is a lightweight Go sidecar that runs alongside Traefik and bridges the ga
 
 ![Janus Architecture](docs/infographic.svg)
 
-Janus sits inside the same Docker network as Traefik (`proxy-network`) and polls Traefik's internal REST API. It never intercepts live traffic — it is a **read-only observer**.
+Janus sits inside the same Docker network as Traefik (`proxy-network`) and polls Traefik's internal REST API. It never intercepts live traffic — it is a **read-only observer** paired with an **active write path** for the IP blocklist only.
 
 ---
 
-## Core Features
+## Feature Overview
 
-### Data Bridge
+| # | Stage | Feature |
+| --- | --- | --- |
+| 1 | Foundation | Security Scorer, Pulse Monitor, embedded SPA |
+| 2–3 | AI Integration | vLLM / Qwen threat analysis, chain-of-thought, per-router attack surface |
+| 4 | Remediation | Copy-Fix snippets, Telegram alerts, audit history |
+| 5 | Policy Engine | Custom middleware policies, configuration drift detection, AI consult |
+| 6 | SQLite Memory | Persistent audit history, 30-day score trend |
+| 7 | Active Defense | IP blocklist (Shield), auto Fail2Ban, manual block/unblock |
+| 7.1 | Prison Guard | Post-ban 403 log monitoring, AI "Watch & Forgive" auto-unblock |
+| 8 | Threat Intel | GeoIP enrichment, Top-20 heavy-hitter analysis, hostile cluster detection |
 
-Connects to Traefik's `/api/rawdata`, `/api/overview`, and `/metrics` endpoints via a typed Go HTTP client. No external dependencies — pure standard library.
+---
 
-### Security Scorer (`internal/security`)
+## Dashboard Tabs
 
-Analyses every non-internal router and produces a **score from 0 to 100**. Points are deducted for:
+### Dashboard
+- Security Score ring gauge (0–100, color-coded)
+- Router red-flag cards sorted worst-first, each with issues, policy violations, AI reasoning, and a "📋 Copy Fix" button
+- Pulse Monitor: error-rate bars per service
+- Janus-AI section: executive summary, chain-of-thought, shadow APIs, bot-scan alerts with "🚫 Block" buttons
+- Configuration drift orange banner
+- Intelligence History: sparkline + sortable audit table
 
-| Issue | Deduction |
-| --- | --- |
-| No authentication middleware (`basicAuth` / `forwardAuth` / `digestAuth`) | −40 |
-| No TLS on a public entrypoint (`web`, `websecure`) | −30 |
-| No rate-limit middleware | −20 |
-| No IP allowlist middleware | −10 |
+### Policies
+- Policy definitions (pattern → required middlewares)
+- Compliant / Non-Compliant status per router
+- "Ask Janus-AI" button for a 3-paragraph executive security summary over the last 100 audits
 
-The overall score is the average across all routers.
+### Shield
+- Live blocked-IP list with SVG sparklines (30-min activity), PERSISTENT ATTACKER / COOLING DOWN AI verdict badges
+- Unblock button per IP
+- Manual IP block form
+- Traefik wiring instructions
 
-### Pulse Monitor (`internal/pulse`)
-
-Parses Traefik's Prometheus text format without any third-party library. Aggregates `traefik_service_requests_total` per service and raises an alert when the combined **4xx + 5xx error rate** exceeds the configured threshold (default: 10 %). High error rates often indicate bot probing or upstream failures.
-
-> Requires `--metrics.prometheus=true` in Traefik. Already included in the provided `docker-compose.yml`.
-
-### Embedded Dashboard
-
-Single-page dark-mode UI (`web/index.html`) compiled into the binary via `//go:embed`. Features:
-
-- Score ring gauge (color-coded: green / amber / red)
-- Router red-flag cards sorted by score, worst first
-- Pulse error-rate bars per service
-- 30-second auto-refresh with manual override
+### Intelligence
+- Top-20 most active IPs: country, city, hit count, error %, top router, AI verdict (HOSTILE / SUSPICIOUS / LEGITIMATE / UNKNOWN)
+- Hostile cluster cards (description, target pattern, member IPs)
+- Attacker nations table with threat level
+- "🔍 Run Analysis" button (triggers async LLM cycle)
+- "⬇ Download Report" — full AI-written Markdown threat assessment
 
 ---
 
@@ -78,13 +87,75 @@ open http://localhost:9090
 
 ## Environment Variables
 
+### Core
+
 | Variable | Default | Description |
 | --- | --- | --- |
-| `TRAEFIK_API_URL` | `http://traefik:8080` | Base URL of Traefik's API (no trailing slash) |
-| `JANUS_PORT` | `9090` | Port Janus listens on inside the container |
-| `JANUS_ALERT_THRESHOLD` | `0.10` | Pulse alert threshold — fraction of error requests (0.0–1.0) |
+| `TRAEFIK_API_URL` | `http://traefik:8080` | Base URL of Traefik's API |
+| `JANUS_PORT` | `9090` | Port Janus listens on |
+| `JANUS_ENV` | `production` | Environment label sent to the AI |
+| `JANUS_ALERT_THRESHOLD` | `0.10` | Pulse alert threshold (0.0–1.0) |
+| `JANUS_POLICIES_PATH` | `/configs/policies.json` | Custom security policies file |
+| `JANUS_KNOWN_MIDDLEWARES` | *(empty)* | Comma-separated list of trusted middleware names |
+
+### AI (vLLM)
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `VLLM_API_URL` | *(empty)* | vLLM base URL — AI features disabled when unset |
+| `VLLM_MODEL` | `qwen2.5-7b-instruct` | Model name to request |
+| `VLLM_API_KEY` | *(empty)* | API key (if required) |
+| `JANUS_AI_INTERVAL` | `60` | AI audit interval in seconds |
+| `JANUS_AI_TRACE_PATH` | `/logs/ai_audit_trace.json` | JSONL trace file path |
+
+### Persistence
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `JANUS_DB_PATH` | `/app/data/janus.db` | SQLite database path (empty = JSON fallback) |
+| `JANUS_HISTORY_PATH` | `/logs/audit_history.json` | JSON history path (legacy fallback) |
+
+### Shield (Active Defense)
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `JANUS_SHIELD_PATH` | `/rules/blocklist.yaml` | Traefik dynamic-config blocklist file |
+| `JANUS_AUTO_BLOCK_MIN` | `10` | Min AI severity (1–10) to trigger auto-block |
+| `JANUS_ACCESS_LOG_PATH` | `/logs/access.log` | Traefik JSON access log path |
+
+### Threat Intelligence
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `JANUS_GEOIP_DB_PATH` | `/app/data/GeoLite2-City.mmdb` | MaxMind GeoLite2-City database path (optional) |
+
+### Alerts
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `TELEGRAM_BOT_TOKEN` | *(empty)* | Telegram bot token (alerts disabled when unset) |
+| `TELEGRAM_CHAT_ID` | *(empty)* | Target Telegram chat ID |
+| `TELEGRAM_SEVERITY_THRESHOLD` | `8` | Min severity to trigger a Telegram alert |
 
 > **Portainer:** set these directly in the stack's "Environment variables" panel. No `.env` file needed.
+
+---
+
+## API Reference
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/status` | Full security audit snapshot |
+| `GET` | `/api/v1/ai-insights` | Latest AI analysis JSON |
+| `GET` | `/api/v1/ai/consult` | On-demand executive AI summary |
+| `GET` | `/api/v1/history` | Audit history (last 100 entries) |
+| `GET` | `/api/v1/trend?days=N` | Score trend (SQLite, default 30 days) |
+| `GET` | `/api/v1/shield` | Blocked IPs + activity sparklines + AI verdicts |
+| `POST` | `/api/v1/shield/block` | Block an IP — body: `{"ip":"x.x.x.x"}` |
+| `POST` | `/api/v1/shield/unblock` | Unblock an IP — body: `{"ip":"x.x.x.x"}` |
+| `GET` | `/api/v1/intel` | Latest threat intelligence report JSON |
+| `POST` | `/api/v1/intel/analyze` | Trigger background intel analysis |
+| `GET` | `/api/v1/intel/report` | Download Markdown threat report |
 
 ---
 
@@ -92,75 +163,98 @@ open http://localhost:9090
 
 ```text
 janus/
-├── main.go                   # HTTP server, /api/status handler, embed wiring
-├── go.mod                    # No external dependencies
-├── Dockerfile                # Multi-stage → scratch image (~6 MB)
-├── docker-compose.yml        # Joins external proxy-network
-├── .env.example              # Environment variable template
-├── VERSION                   # Current version (SemVer)
-├── CHANGELOG.md              # Release history
+├── cmd/janus/main.go              # HTTP server, all API handlers, config
+├── go.mod                         # Go 1.22; minimal external deps
+├── Dockerfile                     # Multi-stage → scratch image
+├── docker-compose.yml             # Joins proxy-network + ai-network
+├── .env.example                   # All environment variables documented
+├── VERSION                        # SemVer (currently 0.8.0)
+├── CHANGELOG.md                   # Full release history
+├── configs/
+│   └── policies.json              # Default security policies (embedded)
 ├── docs/
-│   └── infographic.svg       # Architecture diagram
-├── internal/
-│   ├── traefik/client.go     # Traefik API client + typed response structs
-│   ├── security/scorer.go    # Security analysis engine
-│   └── pulse/monitor.go      # Prometheus text parser + error-rate alerts
-└── web/
-    └── index.html            # Embedded Tailwind SPA
+│   └── infographic.svg            # Architecture diagram
+├── domain/                        # Pure domain layer — zero external deps
+│   ├── analyst.go                 # AIInsights, RouterInsight, AggressivityAlert
+│   ├── audit.go                   # AuditReport, RouterAudit, SecurityIssue
+│   └── policy.go                  # Policy, DriftAlert
+└── internal/
+    ├── app/                       # Application / use-case layer
+    │   ├── consult.go             # ExecutiveSummary use case
+    │   ├── drift.go               # DetectDrift
+    │   ├── intel.go               # ThreatIntelService
+    │   ├── policy.go              # CheckPolicies, LoadPolicies
+    │   ├── remediation.go         # FormatDockerLabels
+    │   ├── review.go              # BanReviewWorker
+    │   ├── trace.go               # JSONL audit trace writer
+    │   └── worker.go              # AIAuditWorker (60-second ticker)
+    ├── infrastructure/
+    │   ├── firewall/shield.go     # ShieldService (blocklist YAML)
+    │   ├── geoip/reader.go        # MaxMind GeoLite2 wrapper
+    │   ├── llm/                   # vLLM client + all system prompts
+    │   ├── logs/                  # AccessLogTailer + TrafficAnalyzer
+    │   ├── storage/               # SQLiteRepository + JSON Repository
+    │   ├── telegram/notifier.go   # Telegram alert sender
+    │   └── traefik/               # Traefik API client + ACL mapper
+    ├── pulse/                     # Prometheus text-format parser
+    ├── security/                  # Security Scorer
+    └── web/static/index.html      # Embedded Tailwind SPA (4 tabs)
 ```
 
 ---
 
-## API
+## Shield Setup (Traefik Integration)
 
-`GET /api/status` — returns a JSON snapshot used by the dashboard.
+For the IP blocklist to take effect in Traefik, mount the rules directory and enable the file provider:
 
-```json
-{
-  "timestamp": "2026-04-19T10:00:00Z",
-  "traefik_ok": true,
-  "overall_score": 55,
-  "red_flags": [
-    {
-      "router_name": "api@docker",
-      "rule": "Host(`api.example.com`)",
-      "score": 30,
-      "issues": [
-        "No authentication middleware (basicAuth / forwardAuth / digestAuth)",
-        "No TLS configured on public entrypoint"
-      ]
-    }
-  ],
-  "pulse_alerts": [
-    {
-      "service_name": "api@docker",
-      "total_requests": 8400,
-      "count_4xx": 980,
-      "count_5xx": 120,
-      "error_rate": 0.131
-    }
-  ],
-  "metrics_enabled": true
-}
+```yaml
+# traefik/docker-compose.yml (excerpt)
+command:
+  - --providers.file.directory=/rules
+  - --providers.file.watch=true
+  - --accesslog=true
+  - --accesslog.filepath=/logs/access.log
+  - --accesslog.format=json
+volumes:
+  - /opt/traefik/rules:/rules
+  - /opt/janus/logs:/logs
 ```
+
+Then add the middleware to any router you want protected:
+
+```
+traefik.http.routers.myapp.middlewares=janus-shield@file
+```
+
+---
+
+## GeoIP Setup (Threat Intelligence)
+
+1. Register for a free MaxMind account at <https://www.maxmind.com>
+2. Download `GeoLite2-City.mmdb`
+3. Place it in the `data/` volume: `/opt/janus/data/GeoLite2-City.mmdb`
+
+If the file is absent, Janus starts normally — geo fields will show `--`.
 
 ---
 
 ## Docker Network
 
-Janus joins the **existing** `proxy-network` as an external network — it never creates or owns it. If the network does not exist, Docker will fail at deploy time (intentional fail-fast behavior).
+Janus joins two existing external networks — it never creates them:
 
 ```yaml
 networks:
   proxy-network:
-    external: true
+    external: true   # shared with Traefik
+  ai-network:
+    external: true   # shared with vLLM container
 ```
 
 ---
 
 ## Versioning
 
-Janus follows [Semantic Versioning](https://semver.org/). The current version is tracked in [VERSION](VERSION) and release history in [CHANGELOG.md](CHANGELOG.md).
+Janus follows [Semantic Versioning](https://semver.org/). The current version is tracked in [VERSION](VERSION) and full release history in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -168,10 +262,10 @@ Janus follows [Semantic Versioning](https://semver.org/). The current version is
 
 Janus (the two-faced Roman god) looks in two directions simultaneously:
 
-- **Inward** — reads Traefik's internal state via its API
-- **Outward** — presents a clear, actionable summary for both teams
+- **Inward** — reads Traefik's internal state and access logs
+- **Outward** — presents clear, actionable intelligence for both DevOps and Developers
 
-It does not replace Traefik's dashboard, Prometheus, or Grafana. It is the **fast, zero-configuration bridge** for teams who need situational awareness without standing up a full observability stack.
+It does not replace Traefik's dashboard, Prometheus, or Grafana. It is the **fast, zero-configuration security bridge** for teams who need situational awareness and active defense without standing up a full observability stack.
 
 ---
 

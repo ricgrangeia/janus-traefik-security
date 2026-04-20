@@ -1,158 +1,198 @@
-<svg width="900" height="520" viewBox="0 0 900 520" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 620" width="900" height="620" font-family="ui-monospace,SFMono-Regular,monospace">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#0f172a"/>
-      <stop offset="100%" stop-color="#1e1b4b"/>
+      <stop offset="100%" stop-color="#0a0f1e"/>
     </linearGradient>
-    <linearGradient id="traefik-grad" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#1e3a5f"/>
-      <stop offset="100%" stop-color="#0f2440"/>
+    <linearGradient id="janusGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#4f46e5"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
     </linearGradient>
-    <linearGradient id="janus-grad" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#2e1065"/>
-      <stop offset="100%" stop-color="#1a0a3d"/>
-    </linearGradient>
-    <linearGradient id="module-grad" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#312e81"/>
-      <stop offset="100%" stop-color="#1e1b4b"/>
-    </linearGradient>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6366f1"/>
-    </marker>
-    <marker id="arrow-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4b5563"/>
-    </marker>
-    <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981"/>
-    </marker>
-    <filter id="glow">
-      <feGaussianBlur stdDeviation="3" result="blur"/>
-      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-    </filter>
   </defs>
 
   <!-- Background -->
-  <rect width="900" height="520" fill="url(#bg)" rx="12"/>
+  <rect width="900" height="620" fill="url(#bg)" rx="12"/>
 
   <!-- Title -->
-  <text x="450" y="42" text-anchor="middle" font-size="20" font-weight="bold" fill="#e0e7ff" letter-spacing="3">JANUS</text>
-  <text x="450" y="62" text-anchor="middle" font-size="11" fill="#6366f1" letter-spacing="2">TRAEFIK SECURITY BRIDGE  ·  v0.1.0</text>
+  <text x="450" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="bold" letter-spacing="2">JANUS — TRAEFIK SECURITY BRIDGE</text>
+  <text x="450" y="54" text-anchor="middle" fill="#6366f1" font-size="11" letter-spacing="1">v0.8.0 · AI-Powered Active Defense Sidecar</text>
 
-  <!-- ── proxy-network boundary ──────────────────────────────────────── -->
-  <rect x="30" y="85" width="840" height="330" rx="10" fill="none" stroke="#374151" stroke-width="1.5" stroke-dasharray="6,4"/>
-  <text x="44" y="102" font-size="10" fill="#374151" letter-spacing="1">proxy-network  (external Docker network)</text>
+  <!-- ── TRAEFIK (left) ── -->
+  <rect x="30" y="80" width="160" height="220" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1.5"/>
+  <text x="110" y="102" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="bold" letter-spacing="1">TRAEFIK</text>
+  <line x1="30" y1="110" x2="190" y2="110" stroke="#334155" stroke-width="1"/>
+  <text x="50" y="130" fill="#64748b" font-size="9">/api/rawdata</text>
+  <text x="50" y="146" fill="#64748b" font-size="9">/api/overview</text>
+  <text x="50" y="162" fill="#64748b" font-size="9">/metrics (Prometheus)</text>
+  <text x="50" y="178" fill="#64748b" font-size="9">/ping</text>
+  <line x1="40" y1="190" x2="180" y2="190" stroke="#1e293b" stroke-width="1"/>
+  <text x="50" y="208" fill="#64748b" font-size="9">access.log (JSON)</text>
+  <text x="50" y="224" fill="#64748b" font-size="9">rules/ (file provider)</text>
+  <text x="50" y="240" fill="#64748b" font-size="9">janus-shield@file</text>
+  <text x="50" y="278" fill="#475569" font-size="8" font-style="italic">proxy-network</text>
 
-  <!-- ══ INTERNET / CLIENT ══ -->
-  <rect x="50" y="120" width="130" height="70" rx="8" fill="#111827" stroke="#374151" stroke-width="1"/>
-  <text x="115" y="148" text-anchor="middle" font-size="22">🌐</text>
-  <text x="115" y="168" text-anchor="middle" font-size="10" fill="#9ca3af">Internet</text>
-  <text x="115" y="182" text-anchor="middle" font-size="9" fill="#4b5563">HTTP / HTTPS traffic</text>
+  <!-- ── vLLM (right) ── -->
+  <rect x="710" y="80" width="160" height="140" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1.5"/>
+  <text x="790" y="102" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="bold" letter-spacing="1">vLLM / QWEN</text>
+  <line x1="710" y1="110" x2="870" y2="110" stroke="#334155" stroke-width="1"/>
+  <text x="730" y="130" fill="#64748b" font-size="9">OpenAI-compat API</text>
+  <text x="730" y="146" fill="#64748b" font-size="9">100k token context</text>
+  <text x="730" y="162" fill="#64748b" font-size="9">Security audit prompt</text>
+  <text x="730" y="178" fill="#64748b" font-size="9">Intel threat prompt</text>
+  <text x="730" y="194" fill="#64748b" font-size="9">Ban review prompt</text>
+  <text x="730" y="208" fill="#475569" font-size="8" font-style="italic">ai-network</text>
 
-  <!-- Arrow: Internet → Traefik -->
-  <line x1="180" y1="155" x2="228" y2="155" stroke="#4b5563" stroke-width="1.5" marker-end="url(#arrow-gray)"/>
+  <!-- ── MaxMind (right lower) ── -->
+  <rect x="710" y="240" width="160" height="70" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1.5"/>
+  <text x="790" y="262" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="bold" letter-spacing="1">MAXMIND</text>
+  <line x1="710" y1="270" x2="870" y2="270" stroke="#334155" stroke-width="1"/>
+  <text x="730" y="288" fill="#64748b" font-size="9">GeoLite2-City.mmdb</text>
+  <text x="730" y="304" fill="#64748b" font-size="9">Country · City · ASN</text>
 
-  <!-- ══ TRAEFIK CONTAINER ══ -->
-  <rect x="230" y="100" width="180" height="230" rx="10" fill="url(#traefik-grad)" stroke="#1d4ed8" stroke-width="1.5"/>
-  <text x="320" y="126" text-anchor="middle" font-size="11" font-weight="bold" fill="#93c5fd" letter-spacing="1">TRAEFIK</text>
-  <text x="320" y="142" text-anchor="middle" font-size="9" fill="#3b82f6">container: traefik</text>
+  <!-- ── JANUS CORE (center) ── -->
+  <rect x="220" y="68" width="460" height="400" rx="10" fill="url(#janusGrad)" fill-opacity="0.08" stroke="#4f46e5" stroke-width="1.5"/>
+  <text x="450" y="90" text-anchor="middle" fill="#818cf8" font-size="13" font-weight="bold" letter-spacing="2">JANUS CORE</text>
 
-  <!-- Traefik internals -->
-  <rect x="248" y="155" width="144" height="32" rx="5" fill="#0f172a" stroke="#1e40af" stroke-width="1"/>
-  <text x="320" y="170" text-anchor="middle" font-size="9" fill="#60a5fa">Entrypoints</text>
-  <text x="320" y="182" text-anchor="middle" font-size="8" fill="#374151">:80  :443</text>
+  <!-- Infrastructure layer -->
+  <rect x="235" y="98" width="430" height="50" rx="6" fill="#1e1b4b" fill-opacity="0.6" stroke="#3730a3" stroke-width="1"/>
+  <text x="450" y="115" text-anchor="middle" fill="#a5b4fc" font-size="9" font-weight="bold" letter-spacing="1">INFRASTRUCTURE</text>
+  <text x="255" y="132" fill="#6366f1" font-size="8">Traefik Client</text>
+  <text x="330" y="132" fill="#6366f1" font-size="8">LLM Client</text>
+  <text x="400" y="132" fill="#6366f1" font-size="8">GeoIP Reader</text>
+  <text x="480" y="132" fill="#6366f1" font-size="8">Log Tailer</text>
+  <text x="545" y="132" fill="#6366f1" font-size="8">Shield Svc</text>
+  <text x="608" y="132" fill="#6366f1" font-size="8">SQLite</text>
 
-  <rect x="248" y="195" width="144" height="32" rx="5" fill="#0f172a" stroke="#1e40af" stroke-width="1"/>
-  <text x="320" y="210" text-anchor="middle" font-size="9" fill="#60a5fa">Routers + Middlewares</text>
-  <text x="320" y="222" text-anchor="middle" font-size="8" fill="#374151">Docker label provider</text>
+  <!-- Domain layer -->
+  <rect x="235" y="158" width="430" height="35" rx="6" fill="#172554" fill-opacity="0.6" stroke="#1e40af" stroke-width="1"/>
+  <text x="450" y="172" text-anchor="middle" fill="#93c5fd" font-size="9" font-weight="bold" letter-spacing="1">DOMAIN</text>
+  <text x="270" y="185" fill="#3b82f6" font-size="8">AuditReport</text>
+  <text x="345" y="185" fill="#3b82f6" font-size="8">RouterAudit</text>
+  <text x="420" y="185" fill="#3b82f6" font-size="8">AIInsights</text>
+  <text x="490" y="185" fill="#3b82f6" font-size="8">Policy</text>
+  <text x="540" y="185" fill="#3b82f6" font-size="8">DriftAlert</text>
+  <text x="600" y="185" fill="#3b82f6" font-size="8">ThreatReport</text>
 
-  <rect x="248" y="235" width="144" height="32" rx="5" fill="#0f172a" stroke="#1e40af" stroke-width="1"/>
-  <text x="320" y="250" text-anchor="middle" font-size="9" fill="#60a5fa">/api/rawdata</text>
-  <text x="320" y="262" text-anchor="middle" font-size="8" fill="#374151">REST API  :8080</text>
+  <!-- App layer -->
+  <rect x="235" y="203" width="430" height="95" rx="6" fill="#14532d" fill-opacity="0.3" stroke="#166534" stroke-width="1"/>
+  <text x="450" y="218" text-anchor="middle" fill="#86efac" font-size="9" font-weight="bold" letter-spacing="1">APPLICATION</text>
 
-  <rect x="248" y="275" width="144" height="32" rx="5" fill="#0f172a" stroke="#1e40af" stroke-width="1"/>
-  <text x="320" y="290" text-anchor="middle" font-size="9" fill="#60a5fa">/metrics</text>
-  <text x="320" y="302" text-anchor="middle" font-size="8" fill="#374151">Prometheus  :8080</text>
+  <rect x="248" y="224" width="90" height="28" rx="4" fill="#14532d" fill-opacity="0.6" stroke="#166534" stroke-width="1"/>
+  <text x="293" y="235" text-anchor="middle" fill="#4ade80" font-size="8">AIAuditWorker</text>
+  <text x="293" y="246" text-anchor="middle" fill="#64748b" font-size="7">60 s ticker</text>
 
-  <!-- Arrow: Traefik API → Janus (rawdata) -->
-  <line x1="410" y1="248" x2="458" y2="248" stroke="#6366f1" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
-  <text x="434" y="241" text-anchor="middle" font-size="8" fill="#6366f1">/rawdata</text>
+  <rect x="348" y="224" width="90" height="28" rx="4" fill="#14532d" fill-opacity="0.6" stroke="#166534" stroke-width="1"/>
+  <text x="393" y="235" text-anchor="middle" fill="#4ade80" font-size="8">BanReviewWorker</text>
+  <text x="393" y="246" text-anchor="middle" fill="#64748b" font-size="7">30 min ticker</text>
 
-  <!-- Arrow: Traefik metrics → Janus (pulse) -->
-  <line x1="410" y1="292" x2="458" y2="292" stroke="#6366f1" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
-  <text x="434" y="285" text-anchor="middle" font-size="8" fill="#6366f1">/metrics</text>
+  <rect x="448" y="224" width="95" height="28" rx="4" fill="#14532d" fill-opacity="0.6" stroke="#166534" stroke-width="1"/>
+  <text x="496" y="235" text-anchor="middle" fill="#4ade80" font-size="8">ThreatIntelService</text>
+  <text x="496" y="246" text-anchor="middle" fill="#64748b" font-size="7">on-demand</text>
 
-  <!-- ══ JANUS CONTAINER ══ -->
-  <rect x="460" y="100" width="320" height="270" rx="10" fill="url(#janus-grad)" stroke="#6366f1" stroke-width="1.5" filter="url(#glow)"/>
-  <text x="620" y="126" text-anchor="middle" font-size="11" font-weight="bold" fill="#c7d2fe" letter-spacing="1">JANUS</text>
-  <text x="620" y="142" text-anchor="middle" font-size="9" fill="#818cf8">container: janus  ·  :9090</text>
+  <rect x="553" y="224" width="100" height="28" rx="4" fill="#14532d" fill-opacity="0.6" stroke="#166534" stroke-width="1"/>
+  <text x="603" y="235" text-anchor="middle" fill="#4ade80" font-size="8">ConsultService</text>
+  <text x="603" y="246" text-anchor="middle" fill="#64748b" font-size="7">history summary</text>
 
-  <!-- Module: Data Bridge -->
-  <rect x="478" y="155" width="284" height="48" rx="6" fill="url(#module-grad)" stroke="#4f46e5" stroke-width="1"/>
-  <text x="494" y="174" font-size="10" font-weight="bold" fill="#a5b4fc">Data Bridge</text>
-  <text x="494" y="189" font-size="8.5" fill="#6b7280">Fetches /api/rawdata · /api/overview · /metrics · /ping</text>
-  <text x="494" y="200" font-size="8" fill="#4b5563">internal/traefik  ·  net/http  ·  5s timeout</text>
+  <rect x="248" y="260" width="120" height="28" rx="4" fill="#14532d" fill-opacity="0.6" stroke="#166534" stroke-width="1"/>
+  <text x="308" y="271" text-anchor="middle" fill="#4ade80" font-size="8">Policy Engine</text>
+  <text x="308" y="282" text-anchor="middle" fill="#64748b" font-size="7">CheckPolicies · DetectDrift</text>
 
-  <!-- Module: Security Scorer -->
-  <rect x="478" y="212" width="284" height="52" rx="6" fill="url(#module-grad)" stroke="#dc2626" stroke-width="1"/>
-  <text x="494" y="231" font-size="10" font-weight="bold" fill="#fca5a5">Security Scorer</text>
-  <text x="494" y="246" font-size="8.5" fill="#6b7280">Scans routers · flags missing TLS, auth, rate-limit, IP allowlist</text>
-  <text x="494" y="258" font-size="8" fill="#4b5563">internal/security  ·  score 0–100 per router  ·  overall avg</text>
+  <rect x="378" y="260" width="120" height="28" rx="4" fill="#14532d" fill-opacity="0.6" stroke="#166534" stroke-width="1"/>
+  <text x="438" y="271" text-anchor="middle" fill="#4ade80" font-size="8">Remediation</text>
+  <text x="438" y="282" text-anchor="middle" fill="#64748b" font-size="7">FormatDockerLabels</text>
 
-  <!-- Module: Pulse Monitor -->
-  <rect x="478" y="273" width="284" height="52" rx="6" fill="url(#module-grad)" stroke="#d97706" stroke-width="1"/>
-  <text x="494" y="292" font-size="10" font-weight="bold" fill="#fcd34d">Pulse Monitor</text>
-  <text x="494" y="307" font-size="8.5" fill="#6b7280">Parses Prometheus text · alerts on 4xx+5xx error rate spikes</text>
-  <text x="494" y="319" font-size="8" fill="#4b5563">internal/pulse  ·  configurable threshold  ·  no dependencies</text>
+  <rect x="508" y="260" width="145" height="28" rx="4" fill="#14532d" fill-opacity="0.6" stroke="#166534" stroke-width="1"/>
+  <text x="580" y="271" text-anchor="middle" fill="#4ade80" font-size="8">TrafficAnalyzer</text>
+  <text x="580" y="282" text-anchor="middle" fill="#64748b" font-size="7">Top-20 heavy hitters · 1 h window</text>
 
-  <!-- Module: Embedded UI -->
-  <rect x="478" y="334" width="284" height="24" rx="6" fill="url(#module-grad)" stroke="#059669" stroke-width="1"/>
-  <text x="620" y="350" text-anchor="middle" font-size="9" fill="#6ee7b7">Embedded SPA  ·  //go:embed  ·  Tailwind CSS  ·  30s auto-refresh</text>
+  <!-- HTTP / API layer -->
+  <rect x="235" y="308" width="430" height="50" rx="6" fill="#451a03" fill-opacity="0.5" stroke="#92400e" stroke-width="1"/>
+  <text x="450" y="322" text-anchor="middle" fill="#fcd34d" font-size="9" font-weight="bold" letter-spacing="1">HTTP API  (Go 1.22 mux)</text>
+  <text x="250" y="340" fill="#d97706" font-size="7">/api/status</text>
+  <text x="305" y="340" fill="#d97706" font-size="7">/ai-insights</text>
+  <text x="370" y="340" fill="#d97706" font-size="7">/shield/*</text>
+  <text x="425" y="340" fill="#d97706" font-size="7">/intel/*</text>
+  <text x="475" y="340" fill="#d97706" font-size="7">/history</text>
+  <text x="522" y="340" fill="#d97706" font-size="7">/trend</text>
+  <text x="565" y="340" fill="#d97706" font-size="7">/ai/consult</text>
+  <text x="625" y="340" fill="#d97706" font-size="7">//go:embed</text>
 
-  <!-- ══ DEVOPS / DEV USER ══ -->
-  <rect x="720" y="120" width="130" height="70" rx="8" fill="#111827" stroke="#374151" stroke-width="1"/>
-  <text x="785" y="148" text-anchor="middle" font-size="22">👥</text>
-  <text x="785" y="168" text-anchor="middle" font-size="10" fill="#9ca3af">DevOps + Devs</text>
-  <text x="785" y="182" text-anchor="middle" font-size="9" fill="#4b5563">localhost:9090</text>
+  <!-- Embedded SPA -->
+  <rect x="235" y="368" width="430" height="88" rx="6" fill="#1a1a2e" fill-opacity="0.8" stroke="#312e81" stroke-width="1"/>
+  <text x="450" y="382" text-anchor="middle" fill="#a5b4fc" font-size="9" font-weight="bold" letter-spacing="1">EMBEDDED SPA  (Tailwind · Dark Mode)</text>
+  <rect x="248" y="389" width="88" height="20" rx="3" fill="#312e81" fill-opacity="0.7"/>
+  <text x="292" y="403" text-anchor="middle" fill="#818cf8" font-size="8">Dashboard</text>
+  <rect x="344" y="389" width="88" height="20" rx="3" fill="#312e81" fill-opacity="0.4"/>
+  <text x="388" y="403" text-anchor="middle" fill="#6366f1" font-size="8">Policies</text>
+  <rect x="440" y="389" width="88" height="20" rx="3" fill="#312e81" fill-opacity="0.4"/>
+  <text x="484" y="403" text-anchor="middle" fill="#6366f1" font-size="8">Shield</text>
+  <rect x="536" y="389" width="116" height="20" rx="3" fill="#312e81" fill-opacity="0.4"/>
+  <text x="594" y="403" text-anchor="middle" fill="#6366f1" font-size="8">Intelligence</text>
+  <text x="255" y="430" fill="#475569" font-size="8">Score ring · Router cards · Pulse bars · Drift banner · Copy Fix · Sparklines · IP table</text>
+  <text x="255" y="444" fill="#475569" font-size="8">Hostile clusters · Attacker nations · AI verdicts · Block/Unblock · Download Report</text>
 
-  <!-- Arrow: Janus → Users -->
-  <line x1="780" y1="230" x2="780" y2="192" stroke="#10b981" stroke-width="1.5" marker-end="url(#arrow-green)"/>
-  <text x="796" y="218" font-size="8" fill="#10b981">Dashboard</text>
+  <!-- ── TELEGRAM (bottom left) ── -->
+  <rect x="30" y="500" width="160" height="80" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1.5"/>
+  <text x="110" y="522" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="bold" letter-spacing="1">TELEGRAM</text>
+  <line x1="30" y1="530" x2="190" y2="530" stroke="#334155" stroke-width="1"/>
+  <text x="50" y="548" fill="#64748b" font-size="9">Threat alert (sev &gt;= 8)</text>
+  <text x="50" y="564" fill="#64748b" font-size="9">Auto-ban alert</text>
+  <text x="50" y="580" fill="#64748b" font-size="9">Drift alert</text>
 
-  <!-- Arrow: Users → Janus (poll) -->
-  <line x1="752" y1="165" x2="720" y2="200" stroke="#374151" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arrow-gray)"/>
-  <text x="730" y="180" font-size="7.5" fill="#4b5563">GET /api/status</text>
+  <!-- ── STORAGE (bottom center) ── -->
+  <rect x="340" y="500" width="220" height="80" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1.5"/>
+  <text x="450" y="522" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="bold" letter-spacing="1">STORAGE</text>
+  <line x1="340" y1="530" x2="560" y2="530" stroke="#334155" stroke-width="1"/>
+  <text x="360" y="548" fill="#64748b" font-size="9">SQLite  audits + router_results</text>
+  <text x="360" y="564" fill="#64748b" font-size="9">JSONL  ai_audit_trace.json</text>
+  <text x="360" y="580" fill="#64748b" font-size="9">YAML   rules/blocklist.yaml</text>
 
-  <!-- ══ LEGEND ══ -->
-  <rect x="30" y="435" width="840" height="68" rx="8" fill="#0f172a" stroke="#1f2937" stroke-width="1"/>
-  <text x="50" y="454" font-size="9" font-weight="bold" fill="#6b7280" letter-spacing="1">LEGEND</text>
+  <!-- ── BROWSER (bottom right) ── -->
+  <rect x="710" y="500" width="160" height="80" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1.5"/>
+  <text x="790" y="522" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="bold" letter-spacing="1">BROWSER</text>
+  <line x1="710" y1="530" x2="870" y2="530" stroke="#334155" stroke-width="1"/>
+  <text x="730" y="548" fill="#64748b" font-size="9">localhost:9090</text>
+  <text x="730" y="564" fill="#64748b" font-size="9">30 s auto-refresh</text>
+  <text x="730" y="580" fill="#64748b" font-size="9">Portainer-friendly</text>
 
-  <!-- legend items -->
-  <line x1="100" y1="470" x2="130" y2="470" stroke="#6366f1" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
-  <text x="135" y="474" font-size="9" fill="#9ca3af">Traefik API poll (read-only)</text>
+  <!-- ── ARROWS ── -->
+  <!-- Traefik → Janus API poll -->
+  <line x1="190" y1="155" x2="235" y2="155" stroke="#4f46e5" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <polygon points="233,151 241,155 233,159" fill="#4f46e5"/>
+  <text x="193" y="150" fill="#4f46e5" font-size="7">poll</text>
 
-  <line x1="310" y1="470" x2="340" y2="470" stroke="#10b981" stroke-width="1.5" marker-end="url(#arrow-green)"/>
-  <text x="345" y="474" font-size="9" fill="#9ca3af">Dashboard response</text>
+  <!-- Traefik ← Janus blocklist write -->
+  <line x1="190" y1="228" x2="235" y2="228" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <polygon points="192,224 184,228 192,232" fill="#ef4444"/>
+  <text x="192" y="222" fill="#ef4444" font-size="7">write</text>
 
-  <line x1="500" y1="470" x2="530" y2="470" stroke="#4b5563" stroke-width="1.5" marker-end="url(#arrow-gray)"/>
-  <text x="535" y="474" font-size="9" fill="#9ca3af">Public traffic / user request</text>
+  <!-- vLLM ↔ Janus -->
+  <line x1="665" y1="148" x2="710" y2="148" stroke="#8b5cf6" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <polygon points="708,144 716,148 708,152" fill="#8b5cf6"/>
+  <polygon points="667,144 659,148 667,152" fill="#8b5cf6"/>
 
-  <rect x="690" y="462" width="10" height="10" rx="2" fill="#dc2626"/>
-  <text x="705" y="473" font-size="9" fill="#9ca3af">Security issue</text>
+  <!-- GeoIP → Janus -->
+  <line x1="665" y1="275" x2="710" y2="275" stroke="#0ea5e9" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <polygon points="667,271 659,275 667,279" fill="#0ea5e9"/>
 
-  <rect x="770" y="462" width="10" height="10" rx="2" fill="#d97706"/>
-  <text x="785" y="473" font-size="9" fill="#9ca3af">Pulse alert</text>
+  <!-- Janus → Telegram -->
+  <line x1="340" y1="510" x2="190" y2="510" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <polygon points="192,506 184,510 192,514" fill="#f59e0b"/>
 
-  <!-- score examples -->
-  <text x="50" y="495" font-size="8.5" fill="#6b7280">Score:  </text>
-  <rect x="90" y="485" width="32" height="12" rx="3" fill="#10b981" opacity="0.2"/>
-  <text x="106" y="495" text-anchor="middle" font-size="8" fill="#10b981">70–100</text>
-  <text x="128" y="495" font-size="8" fill="#4b5563"> Secure  </text>
-  <rect x="160" y="485" width="32" height="12" rx="3" fill="#d97706" opacity="0.2"/>
-  <text x="176" y="495" text-anchor="middle" font-size="8" fill="#d97706">40–69</text>
-  <text x="198" y="495" font-size="8" fill="#4b5563"> Needs attention  </text>
-  <rect x="278" y="485" width="32" height="12" rx="3" fill="#dc2626" opacity="0.2"/>
-  <text x="294" y="495" text-anchor="middle" font-size="8" fill="#dc2626">0–39</text>
-  <text x="316" y="495" font-size="8" fill="#4b5563"> Critical</text>
+  <!-- Janus → Storage -->
+  <line x1="450" y1="456" x2="450" y2="500" stroke="#10b981" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <polygon points="446,498 450,506 454,498" fill="#10b981"/>
 
-  <text x="750" y="495" text-anchor="end" font-size="8" fill="#374151">github.com/janus-project/janus</text>
+  <!-- Janus → Browser -->
+  <line x1="660" y1="420" x2="720" y2="510" stroke="#6366f1" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <polygon points="717,506 724,514 722,505" fill="#6366f1"/>
+
+  <!-- Legend -->
+  <text x="30" y="612" fill="#334155" font-size="8">-- poll / read</text>
+  <text x="110" y="612" fill="#ef4444" font-size="8">-- write (blocklist)</text>
+  <text x="230" y="612" fill="#8b5cf6" font-size="8">-- AI inference</text>
+  <text x="330" y="612" fill="#f59e0b" font-size="8">-- alert</text>
+  <text x="395" y="612" fill="#10b981" font-size="8">-- persist</text>
+  <text x="460" y="612" fill="#6366f1" font-size="8">-- serve</text>
+  <text x="680" y="612" fill="#475569" font-size="8">github.com/janus-project/janus</text>
 </svg>

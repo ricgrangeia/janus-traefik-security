@@ -54,6 +54,8 @@ services:
       - /opt/janus/configs:/configs
       - /opt/janus/data:/app/data
       - /opt/traefik/rules:/rules
+      - /opt/GeoIP/data:/app/GeoIP
+
     ports:
       - "${JANUS_PORT:-9090}:${JANUS_PORT:-9090}"
     networks:
