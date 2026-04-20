@@ -12,12 +12,13 @@ type VLLMAnalyst struct {
 	client           *Client
 	env              string
 	knownMiddlewares []string
+	protectedIPs     func() []string // optional: returns immune IPs at analysis time
 }
 
 // NewAnalyst creates a VLLMAnalyst backed by the given Client.
 // env is the deployment label (e.g. "production") and knownMiddlewares is the
 // list of middleware names considered trusted/secure in this environment.
-func NewAnalyst(client *Client, env string, knownMiddlewares []string) domain.AIAnalyst {
+func NewAnalyst(client *Client, env string, knownMiddlewares []string) *VLLMAnalyst {
 	if env == "" {
 		env = "production"
 	}
@@ -28,6 +29,13 @@ func NewAnalyst(client *Client, env string, knownMiddlewares []string) domain.AI
 	}
 }
 
+// WithProtectedIPs attaches a function that returns the current immune IPs.
+// These are included in the AI context so it never recommends blocking them.
+func (a *VLLMAnalyst) WithProtectedIPs(fn func() []string) *VLLMAnalyst {
+	a.protectedIPs = fn
+	return a
+}
+
 // Analyze sends the full audit context to the vLLM model, parses the structured
 // JSON response, and returns an enriched AuditReport.
 // If the model is unreachable or returns unparseable output the original report
@@ -35,7 +43,11 @@ func NewAnalyst(client *Client, env string, knownMiddlewares []string) domain.AI
 func (a *VLLMAnalyst) Analyze(report domain.AuditReport, snapshot domain.NetworkSnapshot) (domain.AuditReport, error) {
 	start := time.Now()
 
-	userContent := BuildContext(report, snapshot, a.env, a.knownMiddlewares)
+	var protected []string
+	if a.protectedIPs != nil {
+		protected = a.protectedIPs()
+	}
+	userContent := BuildContext(report, snapshot, a.env, a.knownMiddlewares, protected)
 	reply, usage, err := a.client.Chat(SystemPrompt, userContent)
 	if err != nil {
 		report.AIInsights = fallbackInsights(err)

@@ -224,16 +224,55 @@
 <!-- ════════════════ SHIELD TAB ══════════════════════════════════════════ -->
 <div id="panel-shield" class="hidden space-y-6">
 
+  <!-- Immune IPs (read-only: trusted whitelist) -->
+  <section>
+    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">
+      Immune IPs
+      <span class="ml-2 text-gray-700 normal-case font-normal">— protected from blocking (managed in Intelligence tab)</span>
+    </h2>
+    <div class="rounded-lg border border-emerald-900 bg-gray-900 px-4 py-3">
+      <div id="shield-immune-pills" class="flex flex-wrap gap-2">
+        <span class="text-xs text-gray-600">Loading…</span>
+      </div>
+      <p class="text-xs text-gray-600 mt-2">These IPs cannot be blocked. Add/remove them from the Intelligence → Trusted IPs section.</p>
+    </div>
+  </section>
+
+  <!-- Admin Whitelist (janus-admin-whitelist middleware) -->
+  <section>
+    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">
+      Admin Allowlist
+      <span class="ml-2 text-gray-700 normal-case font-normal">— exclusive access via <code class="text-indigo-400">janus-admin-whitelist@file</code></span>
+    </h2>
+    <div class="rounded-lg border border-indigo-900 bg-gray-900 px-4 py-3">
+      <div id="admin-whitelist-pills" class="flex flex-wrap gap-2 mb-3">
+        <span class="text-xs text-gray-600">No admin IPs configured.</span>
+      </div>
+      <div class="flex gap-2 mt-1">
+        <input id="admin-whitelist-input" type="text" placeholder="e.g. 1.2.3.4"
+          class="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+          onkeydown="if(event.key==='Enter') addAdminIP()" />
+        <button onclick="addAdminIP()"
+          class="px-3 py-1.5 rounded bg-indigo-900 hover:bg-indigo-700 text-indigo-300 text-xs font-semibold transition">
+          + Add
+        </button>
+      </div>
+      <p id="admin-whitelist-result" class="text-xs mt-2 hidden"></p>
+      <p class="text-xs text-gray-600 mt-2">Apply to a router: <code class="text-indigo-400">traefik.http.routers.myapp.middlewares=janus-admin-whitelist@file</code></p>
+    </div>
+  </section>
+
   <!-- Manual block -->
   <section>
     <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-4">
       Block IP Address
-      <span class="ml-2 text-gray-700 normal-case font-normal">— add to Traefik blocklist instantly</span>
+      <span class="ml-2 text-gray-700 normal-case font-normal">— add to Traefik global blocklist instantly</span>
     </h2>
     <div class="rounded-lg border border-gray-800 bg-gray-900 px-4 py-4">
       <div class="flex gap-2">
         <input id="block-ip-input" type="text" placeholder="e.g. 1.2.3.4"
-          class="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
+          class="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+          onkeydown="if(event.key==='Enter') manualBlock()" />
         <button onclick="manualBlock()"
           class="px-4 py-1.5 rounded bg-red-700 hover:bg-red-600 text-white text-xs font-semibold transition">
           🚫 Block
@@ -295,6 +334,29 @@
       </div>
     </div>
     <div id="intel-status" class="hidden text-xs text-indigo-400 mb-2"></div>
+  </section>
+
+  <!-- Trusted IP Whitelist -->
+  <section>
+    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">
+      Trusted IPs
+      <span class="ml-2 text-gray-700 normal-case font-normal">— never flagged as hostile by the AI</span>
+    </h2>
+    <div class="rounded-lg border border-gray-800 bg-gray-900 px-4 py-3">
+      <div id="whitelist-pills" class="flex flex-wrap gap-2 mb-3">
+        <span class="text-xs text-gray-600">No trusted IPs yet.</span>
+      </div>
+      <div class="flex gap-2 mt-1">
+        <input id="whitelist-add-input" type="text" placeholder="e.g. 1.2.3.4"
+          class="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-sky-500"
+          onkeydown="if(event.key==='Enter') addToWhitelist()" />
+        <button onclick="addToWhitelist()"
+          class="px-4 py-1.5 rounded bg-sky-700 hover:bg-sky-600 text-white text-xs font-semibold transition">
+          + Trust
+        </button>
+      </div>
+      <p id="whitelist-result" class="text-xs mt-2 hidden"></p>
+    </div>
   </section>
 
   <!-- Summary -->
@@ -365,15 +427,84 @@ async function refresh() {
   }
 }
 
+let _immuneIPs = new Set();
+
 async function loadShield() {
   const el = document.getElementById('shield-list');
   try {
     const res  = await fetch('/api/v1/shield');
     const data = await res.json();
+    _immuneIPs = new Set(data.immune_ips ?? []);
+    renderImmuneIPs(data.immune_ips ?? []);
+    renderAdminPills(data.admin_whitelist ?? []);
     renderShieldList(data.blocked_ips ?? [], data.activity ?? {});
   } catch (e) {
     el.innerHTML = `<div class="text-xs text-red-400">Failed to load: ${esc(e.message)}</div>`;
   }
+}
+
+function renderImmuneIPs(ips) {
+  const el = document.getElementById('shield-immune-pills');
+  if (!ips || !ips.length) {
+    el.innerHTML = '<span class="text-xs text-gray-600">No immune IPs configured.</span>';
+    return;
+  }
+  el.innerHTML = ips.map(ip => `
+    <span class="inline-flex items-center px-3 py-1 rounded-full bg-emerald-950 border border-emerald-800 text-emerald-300 text-xs font-mono">
+      🛡 ${esc(ip)}
+    </span>`).join('');
+}
+
+function renderAdminPills(ips) {
+  const el = document.getElementById('admin-whitelist-pills');
+  if (!ips || !ips.length) {
+    el.innerHTML = '<span class="text-xs text-gray-600">No admin IPs configured.</span>';
+    return;
+  }
+  el.innerHTML = ips.map(ip => `
+    <span class="inline-flex items-center gap-1.5 pl-3 pr-1.5 py-1 rounded-full bg-indigo-950 border border-indigo-700 text-indigo-300 text-xs font-mono">
+      ${esc(ip)}
+      <button onclick="removeAdminIP('${esc(ip)}')"
+        class="w-4 h-4 rounded-full flex items-center justify-center text-indigo-500 hover:bg-indigo-800 hover:text-white transition text-[10px] leading-none">
+        ×
+      </button>
+    </span>`).join('');
+}
+
+async function addAdminIP() {
+  const input  = document.getElementById('admin-whitelist-input');
+  const result = document.getElementById('admin-whitelist-result');
+  const ip = input.value.trim();
+  if (!ip) return;
+  result.className = 'text-xs mt-2';
+  result.textContent = '…';
+  result.classList.remove('hidden');
+  try {
+    const res = await fetch('/api/v1/shield/admin-whitelist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(d.error ?? `HTTP ${res.status}`);
+    input.value = '';
+    result.textContent = `✓ ${ip} added to admin allowlist.`;
+    result.classList.add('text-indigo-400');
+    await loadShield();
+  } catch (e) {
+    result.textContent = `✗ ${e.message}`;
+    result.classList.add('text-red-400');
+  }
+  setTimeout(() => result.classList.add('hidden'), 3000);
+}
+
+async function removeAdminIP(ip) {
+  await fetch('/api/v1/shield/admin-whitelist', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ip }),
+  });
+  await loadShield();
 }
 
 function render(d, history) {
@@ -862,6 +993,8 @@ function switchTab(name) {
 }
 
 // ── Threat Intelligence ──────────────────────────────────────────────────
+let _lastIntelTs = null; // tracks last known GeneratedAt to detect new results
+
 async function loadIntel() {
   const [intelRes, wlRes] = await Promise.all([
     fetch('/api/v1/intel').catch(() => null),
@@ -870,7 +1003,9 @@ async function loadIntel() {
   if (!intelRes || intelRes.status === 204 || intelRes.status === 503) return;
   const data = await intelRes.json().catch(() => null);
   if (!data) return;
+  if (data.GeneratedAt) _lastIntelTs = data.GeneratedAt;
   const wl = wlRes?.ok ? await wlRes.json().catch(() => []) : [];
+  renderWhitelistPills(wl);
   renderIntel(data, new Set(wl));
 }
 
@@ -879,16 +1014,44 @@ async function triggerIntelAnalysis() {
   const status = document.getElementById('intel-status');
   btn.disabled = true;
   btn.textContent = '⏳ Analyzing…';
-  status.textContent = 'Analysis started — this may take 15–30 seconds.';
   status.classList.remove('hidden');
+
+  const prevTs = _lastIntelTs;
   await fetch('/api/v1/intel/analyze', { method: 'POST' }).catch(() => null);
-  setTimeout(async () => {
-    await loadIntel();
-    btn.disabled = false;
-    btn.textContent = '🔍 Run Analysis';
-    status.textContent = 'Analysis complete.';
-    setTimeout(() => status.classList.add('hidden'), 3000);
-  }, 20000);
+
+  // Poll every 3 s until GeneratedAt changes (max 2 min = 40 attempts)
+  let attempts = 0;
+  const poll = async () => {
+    attempts++;
+    status.textContent = `Analyzing… (${attempts * 3}s)`;
+    const [intelRes, wlRes] = await Promise.all([
+      fetch('/api/v1/intel').catch(() => null),
+      fetch('/api/v1/intel/whitelist').catch(() => null),
+    ]);
+    if (intelRes?.ok && intelRes.status !== 204) {
+      const data = await intelRes.json().catch(() => null);
+      if (data?.GeneratedAt && data.GeneratedAt !== prevTs) {
+        _lastIntelTs = data.GeneratedAt;
+        const wl = wlRes?.ok ? await wlRes.json().catch(() => []) : [];
+        renderWhitelistPills(wl);
+        renderIntel(data, new Set(wl));
+        btn.disabled = false;
+        btn.textContent = '🔍 Run Analysis';
+        status.textContent = '✓ Analysis complete.';
+        setTimeout(() => status.classList.add('hidden'), 4000);
+        return;
+      }
+    }
+    if (attempts < 40) {
+      setTimeout(poll, 3000);
+    } else {
+      btn.disabled = false;
+      btn.textContent = '🔍 Run Analysis';
+      status.textContent = '⚠ Timed out — check logs and try again.';
+      setTimeout(() => status.classList.add('hidden'), 6000);
+    }
+  };
+  setTimeout(poll, 3000);
 }
 
 function downloadIntelReport() {
@@ -1183,8 +1346,15 @@ async function manualBlock() {
   const ip     = input.value.trim();
   if (!ip) return;
   result.className = 'text-xs mt-2';
-  result.textContent = 'Blocking…';
   result.classList.remove('hidden');
+
+  if (_immuneIPs.has(ip)) {
+    result.textContent = `⚠ ${ip} is immune — remove it from Trusted IPs first.`;
+    result.classList.add('text-amber-400');
+    return;
+  }
+
+  result.textContent = 'Blocking…';
   try {
     const res = await fetch('/api/v1/shield/block', {
       method: 'POST',
@@ -1206,6 +1376,57 @@ async function manualBlock() {
 function promptBlockIP(btn) {
   const ip = prompt('Enter the attacker IP address to block:');
   if (ip) blockIP(ip.trim(), btn);
+}
+
+function renderWhitelistPills(wl) {
+  const el = document.getElementById('whitelist-pills');
+  if (!wl || !wl.length) {
+    el.innerHTML = '<span class="text-xs text-gray-600">No trusted IPs yet.</span>';
+    return;
+  }
+  el.innerHTML = wl.map(ip => `
+    <span class="inline-flex items-center gap-1.5 pl-3 pr-1.5 py-1 rounded-full bg-sky-950 border border-sky-700 text-sky-300 text-xs font-mono">
+      ${esc(ip)}
+      <button onclick="removeTrust('${esc(ip)}')"
+        class="w-4 h-4 rounded-full flex items-center justify-center text-sky-500 hover:bg-sky-800 hover:text-white transition text-[10px] leading-none">
+        ×
+      </button>
+    </span>`).join('');
+}
+
+async function addToWhitelist() {
+  const input = document.getElementById('whitelist-add-input');
+  const result = document.getElementById('whitelist-result');
+  const ip = input.value.trim();
+  if (!ip) return;
+  result.className = 'text-xs mt-2';
+  result.textContent = '…';
+  try {
+    const res = await fetch('/api/v1/intel/whitelist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(d.error ?? `HTTP ${res.status}`);
+    input.value = '';
+    result.textContent = `✓ ${ip} added to trusted list.`;
+    result.classList.add('text-sky-400');
+    await loadIntel();
+  } catch (e) {
+    result.textContent = `✗ ${e.message}`;
+    result.classList.add('text-red-400');
+  }
+  setTimeout(() => result.classList.add('hidden'), 3000);
+}
+
+async function removeTrust(ip) {
+  await fetch('/api/v1/intel/whitelist', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ip }),
+  }).catch(() => null);
+  await loadIntel();
 }
 
 async function toggleTrust(ip, btn, currentlyTrusted) {

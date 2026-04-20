@@ -1,9 +1,11 @@
 // Package firewall manages the Traefik dynamic-config YAML file that Janus
-// uses to block attacker IPs via the ipAllowList middleware's excludedIPs strategy.
+// uses to block attacker IPs via the ipAllowList middleware's excludedIPs strategy,
+// and the admin allowlist that restricts specific routes to trusted IPs only.
 package firewall
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -11,13 +13,17 @@ import (
 	"sync"
 )
 
-const middlewareName = "janus-shield"
+const (
+	middlewareName      = "janus-shield"
+	adminMiddlewareName = "janus-admin-whitelist"
+)
 
 // ShieldService manages a Traefik-compatible YAML file at a configurable path.
 // It is safe for concurrent use.
 type ShieldService struct {
-	path string
-	mu   sync.Mutex
+	path     string
+	mu       sync.Mutex
+	immunity func(string) bool // optional: returns true for IPs that must never be blocked
 }
 
 // NewShieldService returns a ShieldService that manages the YAML file at path.
@@ -26,16 +32,81 @@ func NewShieldService(path string) *ShieldService {
 	return &ShieldService{path: path}
 }
 
-// ListBlocked returns the IPs currently in the excludedIPs list.
+// WithImmunity attaches a lookup function. BlockIP will refuse to block any IP
+// for which fn returns true, logging the attempt instead.
+func (s *ShieldService) WithImmunity(fn func(string) bool) *ShieldService {
+	s.immunity = fn
+	return s
+}
+
+// ListBlocked returns the IPs currently in the excludedIPs (global block) list.
 func (s *ShieldService) ListBlocked() ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.readIPs()
+	st, err := s.readState()
+	return st.blocked, err
 }
 
-// BlockIP adds ip to the excludedIPs list and rewrites the YAML file.
-// Returns an error if ip is not a valid IP address or is already blocked.
+// GetAdminWhitelist returns the IPs currently in the janus-admin-whitelist sourceRange.
+func (s *ShieldService) GetAdminWhitelist() ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, err := s.readState()
+	return st.adminList, err
+}
+
+// BlockIP adds ip to the global excludedIPs list and rewrites the YAML file.
+// Returns an error if ip is not valid, already blocked, or is immune.
 func (s *ShieldService) BlockIP(ip string) error {
+	ip = strings.TrimSpace(ip)
+	if net.ParseIP(ip) == nil {
+		return fmt.Errorf("invalid IP address: %q", ip)
+	}
+	if s.immunity != nil && s.immunity(ip) {
+		slog.Info("[IMMUNITY] Prevented ban of protected IP", "ip", ip)
+		return fmt.Errorf("IP %s is protected and cannot be blocked", ip)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	st, err := s.readState()
+	if err != nil {
+		return err
+	}
+	for _, existing := range st.blocked {
+		if existing == ip {
+			return nil // idempotent
+		}
+	}
+	st.blocked = append(st.blocked, ip)
+	return s.write(st)
+}
+
+// UnblockIP removes ip from the global excludedIPs list.
+// Returns nil if the IP was not in the list (idempotent).
+func (s *ShieldService) UnblockIP(ip string) error {
+	ip = strings.TrimSpace(ip)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	st, err := s.readState()
+	if err != nil {
+		return err
+	}
+	filtered := st.blocked[:0]
+	for _, v := range st.blocked {
+		if v != ip {
+			filtered = append(filtered, v)
+		}
+	}
+	st.blocked = filtered
+	return s.write(st)
+}
+
+// AddAdminIP adds ip to the janus-admin-whitelist sourceRange.
+func (s *ShieldService) AddAdminIP(ip string) error {
 	ip = strings.TrimSpace(ip)
 	if net.ParseIP(ip) == nil {
 		return fmt.Errorf("invalid IP address: %q", ip)
@@ -44,54 +115,59 @@ func (s *ShieldService) BlockIP(ip string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	ips, err := s.readIPs()
+	st, err := s.readState()
 	if err != nil {
 		return err
 	}
-	for _, existing := range ips {
+	for _, existing := range st.adminList {
 		if existing == ip {
 			return nil // idempotent
 		}
 	}
-	return s.write(append(ips, ip))
+	st.adminList = append(st.adminList, ip)
+	return s.write(st)
 }
 
-// UnblockIP removes ip from the excludedIPs list.
-// Returns nil if the IP was not in the list (idempotent).
-func (s *ShieldService) UnblockIP(ip string) error {
+// RemoveAdminIP removes ip from the janus-admin-whitelist sourceRange.
+func (s *ShieldService) RemoveAdminIP(ip string) error {
 	ip = strings.TrimSpace(ip)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	ips, err := s.readIPs()
+	st, err := s.readState()
 	if err != nil {
 		return err
 	}
-	filtered := ips[:0]
-	for _, v := range ips {
+	filtered := st.adminList[:0]
+	for _, v := range st.adminList {
 		if v != ip {
 			filtered = append(filtered, v)
 		}
 	}
-	return s.write(filtered)
+	st.adminList = filtered
+	return s.write(st)
 }
 
-// readIPs parses blocked IPs from the YAML file.
-// Returns nil slice (no error) if the file does not exist yet.
-func (s *ShieldService) readIPs() ([]string, error) {
+// ── Internal state ────────────────────────────────────────────────────────────
+
+type shieldState struct {
+	blocked   []string // janus-shield excludedIPs
+	adminList []string // janus-admin-whitelist sourceRange
+}
+
+func (s *ShieldService) readState() (shieldState, error) {
 	data, err := os.ReadFile(s.path)
 	if os.IsNotExist(err) {
-		return nil, nil
+		return shieldState{}, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("shield: read %s: %w", s.path, err)
+		return shieldState{}, fmt.Errorf("shield: read %s: %w", s.path, err)
 	}
-	return parseExcludedIPs(string(data)), nil
+	return parseShieldYAML(string(data)), nil
 }
 
-// write regenerates the full Traefik-compatible YAML from the given IP list.
-func (s *ShieldService) write(ips []string) error {
+func (s *ShieldService) write(st shieldState) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return fmt.Errorf("shield: mkdir: %w", err)
 	}
@@ -99,17 +175,29 @@ func (s *ShieldService) write(ips []string) error {
 	var b strings.Builder
 	b.WriteString("http:\n")
 	b.WriteString("  middlewares:\n")
+
+	// Global block list — sourceRange allows all, excludedIPs deny the attackers.
 	b.WriteString("    " + middlewareName + ":\n")
 	b.WriteString("      ipAllowList:\n")
 	b.WriteString("        sourceRange:\n")
 	b.WriteString("          - \"0.0.0.0/0\"\n")
 	b.WriteString("        ipStrategy:\n")
 	b.WriteString("          excludedIPs:\n")
-	if len(ips) == 0 {
+	if len(st.blocked) == 0 {
 		b.WriteString("            [] # no IPs currently blocked\n")
 	} else {
-		for _, ip := range ips {
+		for _, ip := range st.blocked {
 			fmt.Fprintf(&b, "            - \"%s\"\n", ip)
+		}
+	}
+
+	// Admin allowlist — sourceRange restricts access to trusted IPs only.
+	if len(st.adminList) > 0 {
+		b.WriteString("    " + adminMiddlewareName + ":\n")
+		b.WriteString("      ipAllowList:\n")
+		b.WriteString("        sourceRange:\n")
+		for _, ip := range st.adminList {
+			fmt.Fprintf(&b, "          - \"%s\"\n", ip)
 		}
 	}
 
@@ -119,29 +207,54 @@ func (s *ShieldService) write(ips []string) error {
 	return nil
 }
 
-// parseExcludedIPs extracts IPs from the YAML format this service generates.
-func parseExcludedIPs(yaml string) []string {
-	var (
-		ips     []string
-		inBlock bool
+// ── YAML parser ───────────────────────────────────────────────────────────────
+
+func parseShieldYAML(yaml string) shieldState {
+	var st shieldState
+
+	type curList int
+	const (
+		listNone           curList = iota
+		listShieldExcluded         // janus-shield → excludedIPs
+		listAdminSource            // janus-admin-whitelist → sourceRange
 	)
+
+	cur := listNone
+	inAdmin := false
+
 	for _, line := range strings.Split(yaml, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "excludedIPs:" {
-			inBlock = true
-			continue
-		}
-		if !inBlock {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "- ") {
-			ip := strings.Trim(strings.TrimPrefix(trimmed, "- "), `"`)
-			if net.ParseIP(ip) != nil {
-				ips = append(ips, ip)
+
+		switch trimmed {
+		case middlewareName + ":":
+			inAdmin = false
+			cur = listNone
+		case adminMiddlewareName + ":":
+			inAdmin = true
+			cur = listNone
+		case "excludedIPs:":
+			if !inAdmin {
+				cur = listShieldExcluded
 			}
-		} else if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
-			break // end of the excludedIPs list
+		case "sourceRange:":
+			if inAdmin {
+				cur = listAdminSource
+			}
+		default:
+			if strings.HasPrefix(trimmed, "- ") {
+				ip := strings.Trim(strings.TrimPrefix(trimmed, "- "), `"`)
+				if net.ParseIP(ip) != nil {
+					switch cur {
+					case listShieldExcluded:
+						st.blocked = append(st.blocked, ip)
+					case listAdminSource:
+						st.adminList = append(st.adminList, ip)
+					}
+				}
+			} else if trimmed != "" && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "[]") {
+				cur = listNone
+			}
 		}
 	}
-	return ips
+	return st
 }

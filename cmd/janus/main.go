@@ -211,8 +211,12 @@ func main() {
 		prev *domain.AuditReport
 	}
 
+	// ── Trusted-IP whitelist (created early — shield needs it for immunity) ─
+	whitelist := app.NewWhitelistService(cfg.WhitelistPath)
+
 	// ── Shield service (always active, AI worker uses it for auto-block) ──
-	shield := firewall.NewShieldService(cfg.ShieldPath)
+	shield := firewall.NewShieldService(cfg.ShieldPath).
+		WithImmunity(whitelist.Contains)
 
 	// ── Optional AI worker + consult service ─────────────────────────────
 	var aiWorker     *app.AIAuditWorker
@@ -221,7 +225,8 @@ func main() {
 	if cfg.VLLMEnabled {
 		knownMiddlewares := app.ParseKnownMiddlewares(cfg.KnownMiddlewares)
 		llmClient         = llm.NewClient(cfg.VLLMURL, cfg.VLLMModel, cfg.VLLMAPIKey)
-		analyst           := llm.NewAnalyst(llmClient, cfg.JanusEnv, knownMiddlewares)
+		analyst           := llm.NewAnalyst(llmClient, cfg.JanusEnv, knownMiddlewares).
+			WithProtectedIPs(whitelist.List)
 		aiWorker           = app.NewAIAuditWorker(
 			client, auditor, analyst,
 			cfg.AlertThreshold, cfg.AIAuditInterval, cfg.AITracePath,
@@ -271,9 +276,6 @@ func main() {
 		_ = reviewCancel
 		go reviewWorker.Run(reviewCtx)
 	}
-
-	// ── Trusted-IP whitelist ─────────────────────────────────────────────
-	whitelist := app.NewWhitelistService(cfg.WhitelistPath)
 
 	// ── Threat intelligence service (requires AI + traffic analyzer) ─────
 	var intelSvc *app.ThreatIntelService
@@ -409,9 +411,17 @@ func main() {
 			activity[ip] = entry
 		}
 
+		adminList, _ := shield.GetAdminWhitelist()
+		if adminList == nil {
+			adminList = []string{}
+		}
+		immuneIPs := whitelist.List()
+
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"blocked_ips": ips,
-			"activity":    activity,
+			"blocked_ips":     ips,
+			"activity":        activity,
+			"admin_whitelist": adminList,
+			"immune_ips":      immuneIPs,
 		})
 	})
 
@@ -455,6 +465,61 @@ func main() {
 		}
 		slog.Info("Shield: IP unblocked via API", "ip", body.IP)
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "unblocked", "ip": body.IP})
+	})
+
+	// GET /api/v1/shield/admin-whitelist — returns the janus-admin-whitelist IPs.
+	mux.HandleFunc("GET /api/v1/shield/admin-whitelist", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		ips, err := shield.GetAdminWhitelist()
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		if ips == nil {
+			ips = []string{}
+		}
+		_ = json.NewEncoder(w).Encode(ips)
+	})
+
+	// POST /api/v1/shield/admin-whitelist — add an IP to the admin allowlist.
+	mux.HandleFunc("POST /api/v1/shield/admin-whitelist", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var body struct {
+			IP string `json:"ip"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.IP == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "body must be {\"ip\":\"x.x.x.x\"}"})
+			return
+		}
+		if err := shield.AddAdminIP(body.IP); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		slog.Info("Shield: admin whitelist IP added", "ip", body.IP)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "added", "ip": body.IP})
+	})
+
+	// DELETE /api/v1/shield/admin-whitelist — remove an IP from the admin allowlist.
+	mux.HandleFunc("DELETE /api/v1/shield/admin-whitelist", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var body struct {
+			IP string `json:"ip"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.IP == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "body must be {\"ip\":\"x.x.x.x\"}"})
+			return
+		}
+		if err := shield.RemoveAdminIP(body.IP); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		slog.Info("Shield: admin whitelist IP removed", "ip", body.IP)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "removed", "ip": body.IP})
 	})
 
 	// GET /api/v1/intel/whitelist — returns all trusted IPs.

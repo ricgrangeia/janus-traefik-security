@@ -52,7 +52,9 @@ Focus areas:
 2. CORRELATION — identify routers sharing the same security gap pattern (systemic policy failure vs isolated misconfiguration).
 3. SHADOW APIS — flag routers whose rule or name implies internal tools, admin panels, debug endpoints, metrics, or undocumented APIs exposed without authentication.
 4. AGGRESSIVITY — for services with elevated 4xx/5xx error rates, classify whether the pattern looks like automated bot scanning, application bugs, or legitimate traffic spikes.
-5. ATTACK SURFACE — for each flagged router, describe specifically how an attacker would try to exploit the configuration based on its Host/Path rules.`
+5. ATTACK SURFACE — for each flagged router, describe specifically how an attacker would try to exploit the configuration based on its Host/Path rules.
+
+IMMUNITY RULE: You are strictly forbidden from recommending a ban or block for any IP listed as 'Protected' in the provided context. If a Protected IP shows elevated traffic, classify it as 'High Usage — Internal/Trusted' and do not suggest any blocking remediation for it.`
 
 // aiResponseDTO mirrors the JSON the model is instructed to return.
 type aiResponseDTO struct {
@@ -93,6 +95,7 @@ func BuildContext(
 	snapshot domain.NetworkSnapshot,
 	env string,
 	knownMiddlewares []string,
+	protectedIPs []string,
 ) string {
 	reportJSON, _ := json.MarshalIndent(report, "", "  ")
 	snapshotJSON, _ := json.MarshalIndent(snapshot, "", "  ")
@@ -102,13 +105,18 @@ func BuildContext(
 		middlewareList = strings.Join(knownMiddlewares, ", ")
 	}
 
+	protectedSection := ""
+	if len(protectedIPs) > 0 {
+		protectedSection = fmt.Sprintf("\nProtected IPs (NEVER block these — owner-confirmed trusted): %s\n",
+			strings.Join(protectedIPs, ", "))
+	}
+
 	return fmt.Sprintf(`=== JANUS NETWORK SNAPSHOT ===
 Environment          : %s
 Known Secure Middlewares: %s
 Overall Score        : %d / 100
 Traefik Reachable    : %v
-Snapshot Timestamp   : %s
-
+Snapshot Timestamp   : %s%s
 --- Security Audit Results (JSON) ---
 %s
 
@@ -120,6 +128,7 @@ Snapshot Timestamp   : %s
 		report.OverallScore,
 		report.TraefikOK,
 		report.GeneratedAt.Format("2006-01-02T15:04:05Z"),
+		protectedSection,
 		string(reportJSON),
 		string(snapshotJSON),
 	)
