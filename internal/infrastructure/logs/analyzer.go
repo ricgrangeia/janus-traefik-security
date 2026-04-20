@@ -25,17 +25,29 @@ type IPStats struct {
 	LastSeen  time.Time
 }
 
+// ErrorSample is one 4xx/5xx request captured for diagnostic display.
+type ErrorSample struct {
+	Status int       `json:"Status"`
+	Method string    `json:"Method"`
+	Path   string    `json:"Path"`
+	Time   time.Time `json:"Time"`
+}
+
 // analyzerEntry mirrors all fields Janus reads from the Traefik access log.
 type analyzerEntry struct {
 	ClientAddr       string `json:"ClientAddr"`
 	DownstreamStatus int    `json:"DownstreamStatus"`
 	RequestPath      string `json:"RequestPath"`
+	RequestMethod    string `json:"RequestMethod"`
 	RouterName       string `json:"RouterName"`
 	StartUTC         string `json:"StartUTC"`
 	Time             string `json:"time"`
 }
 
-const retentionPeriod = time.Hour
+const (
+	retentionPeriod    = time.Hour
+	maxErrorSamplesPerIP = 100 // ring-buffer cap
+)
 
 type ipCounter struct {
 	total    int
@@ -44,6 +56,7 @@ type ipCounter struct {
 	count5xx int
 	routers  map[string]int
 	lastSeen time.Time
+	errors   []ErrorSample // bounded ring of recent 4xx/5xx
 }
 
 // TrafficAnalyzer reads the full Traefik access log to build IP traffic statistics
@@ -129,6 +142,24 @@ func (a *TrafficAnalyzer) UniqueIPCount() int {
 	return len(a.counts)
 }
 
+// RecentErrors returns up to n recent 4xx/5xx samples for ip, newest last.
+// Returns nil if no error data is available for this IP.
+func (a *TrafficAnalyzer) RecentErrors(ip string, n int) ([]ErrorSample, int, int) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	c := a.counts[ip]
+	if c == nil {
+		return nil, 0, 0
+	}
+	samples := c.errors
+	if len(samples) > n {
+		samples = samples[len(samples)-n:]
+	}
+	out := make([]ErrorSample, len(samples))
+	copy(out, samples)
+	return out, c.count4xx, c.count5xx
+}
+
 func (a *TrafficAnalyzer) poll() {
 	f, err := os.Open(a.path)
 	if err != nil {
@@ -161,6 +192,8 @@ func (a *TrafficAnalyzer) poll() {
 	type update struct {
 		ip     string
 		status int
+		method string
+		path   string
 		router string
 		ts     time.Time
 	}
@@ -181,7 +214,7 @@ func (a *TrafficAnalyzer) poll() {
 			continue
 		}
 		ts := parseTime(e.StartUTC, e.Time)
-		updates = append(updates, update{ip, e.DownstreamStatus, e.RouterName, ts})
+		updates = append(updates, update{ip, e.DownstreamStatus, e.RequestMethod, e.RequestPath, e.RouterName, ts})
 	}
 
 	a.mu.Lock()
@@ -206,6 +239,13 @@ func (a *TrafficAnalyzer) poll() {
 		}
 		if u.ts.After(c.lastSeen) {
 			c.lastSeen = u.ts
+		}
+		if u.status >= 400 {
+			sample := ErrorSample{Status: u.status, Method: u.method, Path: u.path, Time: u.ts}
+			c.errors = append(c.errors, sample)
+			if len(c.errors) > maxErrorSamplesPerIP {
+				c.errors = c.errors[len(c.errors)-maxErrorSamplesPerIP:]
+			}
 		}
 	}
 	a.mu.Unlock()

@@ -585,6 +585,33 @@ func main() {
 		_ = json.NewEncoder(w).Encode(report)
 	})
 
+	// GET /api/v1/intel/ip-activity — returns recent error samples for a specific IP.
+	mux.HandleFunc("GET /api/v1/intel/ip-activity", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		ip := r.URL.Query().Get("ip")
+		if ip == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "ip query parameter required"})
+			return
+		}
+		if trafficAnalyzer == nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "traffic analyzer not configured"})
+			return
+		}
+		errors, total4xx, total5xx := trafficAnalyzer.RecentErrors(ip, 50)
+		if errors == nil {
+			errors = []janusLogs.ErrorSample{}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ip":        ip,
+			"total_4xx": total4xx,
+			"total_5xx": total5xx,
+			"errors":    errors,
+		})
+	})
+
 	// POST /api/v1/intel/analyze — triggers a background threat intelligence analysis.
 	mux.HandleFunc("POST /api/v1/intel/analyze", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
