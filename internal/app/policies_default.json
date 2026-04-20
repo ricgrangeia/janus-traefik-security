@@ -1,0 +1,34 @@
+{
+  "policies": [
+    {
+      "name": "admin-protection",
+      "pattern": "*admin*",
+      "required": ["auth", "ipallowlist"],
+      "description": "Admin interfaces must be authenticated and IP-restricted"
+    },
+    {
+      "name": "api-rate-limiting",
+      "pattern": "*api*",
+      "required": ["ratelimit"],
+      "description": "API endpoints must be rate limited to prevent abuse"
+    },
+    {
+      "name": "public-services",
+      "pattern": "public-*",
+      "required": ["ratelimit"],
+      "description": "Public-facing services require rate limiting"
+    },
+    {
+      "name": "dashboard-protection",
+      "pattern": "*dashboard*",
+      "required": ["auth", "ipallowlist"],
+      "description": "Dashboards must be authenticated and IP-restricted"
+    },
+    {
+      "name": "monitoring-tools",
+      "pattern": "*monitor*",
+      "required": ["auth"],
+      "description": "Monitoring tools must require authentication"
+    }
+  ]
+}

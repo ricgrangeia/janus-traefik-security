@@ -25,23 +25,30 @@ type policiesFile struct {
 }
 
 // LoadPolicies reads policy definitions from a JSON file.
-// Returns nil (no policies, no error) if path is empty or the file doesn't exist.
+// If the file does not exist, it falls back to the embedded defaults silently.
+// Returns an error only for I/O errors other than "not found" or JSON parse failures.
 func LoadPolicies(path string) ([]domain.Policy, error) {
-	if path == "" {
-		return nil, nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			slog.Warn("policies file not found — running without user-defined policies", "path", path)
-			return nil, nil
+	var data []byte
+	if path != "" {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return nil, fmt.Errorf("load policies %s: %w", path, err)
+			}
+			// File not found — fall through to embedded defaults.
+			slog.Info("policies file not found, using built-in defaults", "path", path)
+		} else {
+			data = raw
+			slog.Info("policies loaded from file", "path", path)
 		}
-		return nil, fmt.Errorf("load policies %s: %w", path, err)
+	}
+	if data == nil {
+		data = defaultPoliciesJSON
 	}
 
 	var pf policiesFile
 	if err := json.Unmarshal(data, &pf); err != nil {
-		return nil, fmt.Errorf("parse policies %s: %w", path, err)
+		return nil, fmt.Errorf("parse policies: %w", err)
 	}
 
 	policies := make([]domain.Policy, 0, len(pf.Policies))
@@ -56,8 +63,6 @@ func LoadPolicies(path string) ([]domain.Policy, error) {
 		}
 		policies = append(policies, p)
 	}
-
-	slog.Info("policies loaded", "count", len(policies), "path", path)
 	return policies, nil
 }
 
