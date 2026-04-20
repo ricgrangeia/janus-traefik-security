@@ -50,6 +50,7 @@ type config struct {
 	AutoBlockMin      int    // severity threshold for automatic IP blocking (default 10)
 	AccessLogPath     string // path to Traefik's JSON access log
 	GeoIPPath         string // path to GeoLite2-City.mmdb (optional)
+	WhitelistPath     string // path to trusted-IP whitelist JSON
 }
 
 // ── API response DTOs ─────────────────────────────────────────────────────
@@ -271,10 +272,14 @@ func main() {
 		go reviewWorker.Run(reviewCtx)
 	}
 
+	// ── Trusted-IP whitelist ─────────────────────────────────────────────
+	whitelist := app.NewWhitelistService(cfg.WhitelistPath)
+
 	// ── Threat intelligence service (requires AI + traffic analyzer) ─────
 	var intelSvc *app.ThreatIntelService
 	if llmClient != nil && trafficAnalyzer != nil {
-		intelSvc = app.NewThreatIntelService(trafficAnalyzer, geoReader, llmClient)
+		intelSvc = app.NewThreatIntelService(trafficAnalyzer, geoReader, llmClient).
+			WithWhitelist(whitelist)
 	}
 
 	// ── HTTP server ───────────────────────────────────────────────────────
@@ -450,6 +455,52 @@ func main() {
 		}
 		slog.Info("Shield: IP unblocked via API", "ip", body.IP)
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "unblocked", "ip": body.IP})
+	})
+
+	// GET /api/v1/intel/whitelist — returns all trusted IPs.
+	mux.HandleFunc("GET /api/v1/intel/whitelist", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(whitelist.List())
+	})
+
+	// POST /api/v1/intel/whitelist — add an IP to the trusted list.
+	mux.HandleFunc("POST /api/v1/intel/whitelist", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var body struct {
+			IP string `json:"ip"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.IP == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "body must be {\"ip\":\"x.x.x.x\"}"})
+			return
+		}
+		if err := whitelist.Add(body.IP); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		slog.Info("Intel whitelist: IP trusted", "ip", body.IP)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "trusted", "ip": body.IP})
+	})
+
+	// DELETE /api/v1/intel/whitelist — remove an IP from the trusted list.
+	mux.HandleFunc("DELETE /api/v1/intel/whitelist", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var body struct {
+			IP string `json:"ip"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.IP == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "body must be {\"ip\":\"x.x.x.x\"}"})
+			return
+		}
+		if err := whitelist.Remove(body.IP); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		slog.Info("Intel whitelist: IP untrusted", "ip", body.IP)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "removed", "ip": body.IP})
 	})
 
 	// GET /api/v1/intel — returns the latest threat intelligence report as JSON.
@@ -794,6 +845,7 @@ func loadConfig() config {
 		ShieldPath:        getEnv("JANUS_SHIELD_PATH", "/rules/blocklist.yaml"),
 		AccessLogPath:     getEnv("JANUS_ACCESS_LOG_PATH", "/logs/access.log"),
 		GeoIPPath:         getEnv("JANUS_GEOIP_DB_PATH", "/app/data/GeoLite2-City.mmdb"),
+		WhitelistPath:     getEnv("JANUS_WHITELIST_PATH", "/app/data/whitelist.json"),
 	}
 	if v := os.Getenv("JANUS_AUTO_BLOCK_MIN"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 10 {

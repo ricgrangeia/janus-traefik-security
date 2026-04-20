@@ -64,13 +64,14 @@ type ThreatIntelReport struct {
 // ThreatIntelService orchestrates the traffic analyzer, geo lookups, and AI
 // threat profiling into a single on-demand or periodic intelligence report.
 type ThreatIntelService struct {
-	analyzer *logs.TrafficAnalyzer
-	geo      *geoip.Reader
-	client   *llm.Client
+	analyzer  *logs.TrafficAnalyzer
+	geo       *geoip.Reader
+	client    *llm.Client
+	whitelist *WhitelistService // optional — nil means no trusted IPs configured
 
-	mu       sync.RWMutex
-	latest   *ThreatIntelReport
-	running  bool // guard against concurrent analysis
+	mu      sync.RWMutex
+	latest  *ThreatIntelReport
+	running bool // guard against concurrent analysis
 }
 
 // NewThreatIntelService creates the service. All three arguments are required.
@@ -84,6 +85,13 @@ func NewThreatIntelService(
 		geo:      geo,
 		client:   client,
 	}
+}
+
+// WithWhitelist attaches a trusted-IP whitelist. Whitelisted IPs are passed to
+// the AI as known-good so they are not misclassified as hostile.
+func (s *ThreatIntelService) WithWhitelist(w *WhitelistService) *ThreatIntelService {
+	s.whitelist = w
+	return s
 }
 
 // LatestReport returns the most recent report, or nil if Analyze has not run yet.
@@ -141,7 +149,11 @@ func (s *ThreatIntelService) analyze() error {
 		})
 	}
 
-	ctx := buildIntelContext(profiles, s.analyzer.UniqueIPCount())
+	var trustedIPs []string
+	if s.whitelist != nil {
+		trustedIPs = s.whitelist.List()
+	}
+	ctx := buildIntelContext(profiles, s.analyzer.UniqueIPCount(), trustedIPs)
 	reply, usage, err := s.client.Chat(llm.IntelSystemPrompt, ctx)
 	if err != nil {
 		return fmt.Errorf("LLM intel: %w", err)
@@ -232,7 +244,7 @@ func (s *ThreatIntelService) MarkdownReport() string {
 
 // ── Context builder ───────────────────────────────────────────────────────────
 
-func buildIntelContext(profiles []IPProfile, totalUnique int) string {
+func buildIntelContext(profiles []IPProfile, totalUnique int, trustedIPs []string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "=== TRAFFIC INTELLIGENCE SNAPSHOT ===\n")
 	fmt.Fprintf(&b, "Analysis window: last 1 hour\n")
@@ -241,6 +253,10 @@ func buildIntelContext(profiles []IPProfile, totalUnique int) string {
 	fmt.Fprintf(&b, "%-18s %-6s %-20s %-8s %6s %6s %6s %7s  %s\n",
 		"IP", "CC", "Country", "City", "Total", "2xx", "4xx+5xx", "Err%", "Top Router")
 	b.WriteString(strings.Repeat("-", 110) + "\n")
+	if len(trustedIPs) > 0 {
+		fmt.Fprintf(&b, "\nTRUSTED IPs (owner-confirmed — classify as LEGITIMATE regardless of traffic): %s\n\n",
+			strings.Join(trustedIPs, ", "))
+	}
 	for _, p := range profiles {
 		city := p.City
 		if len(city) > 18 {

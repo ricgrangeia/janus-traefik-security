@@ -863,11 +863,15 @@ function switchTab(name) {
 
 // ── Threat Intelligence ──────────────────────────────────────────────────
 async function loadIntel() {
-  const res = await fetch('/api/v1/intel').catch(() => null);
-  if (!res || res.status === 204 || res.status === 503) return;
-  const data = await res.json().catch(() => null);
+  const [intelRes, wlRes] = await Promise.all([
+    fetch('/api/v1/intel').catch(() => null),
+    fetch('/api/v1/intel/whitelist').catch(() => null),
+  ]);
+  if (!intelRes || intelRes.status === 204 || intelRes.status === 503) return;
+  const data = await intelRes.json().catch(() => null);
   if (!data) return;
-  renderIntel(data);
+  const wl = wlRes?.ok ? await wlRes.json().catch(() => []) : [];
+  renderIntel(data, new Set(wl));
 }
 
 async function triggerIntelAnalysis() {
@@ -891,7 +895,7 @@ function downloadIntelReport() {
   window.location.href = '/api/v1/intel/report';
 }
 
-function renderIntel(r) {
+function renderIntel(r, trusted = new Set()) {
   if (r.Summary) {
     document.getElementById('intel-summary').textContent = r.Summary;
     const meta = document.getElementById('intel-meta');
@@ -913,17 +917,35 @@ function renderIntel(r) {
         <th class="px-4 py-2 text-right">Err%</th>
         <th class="px-4 py-2 text-right">Top Router</th>
         <th class="px-4 py-2 text-right">Verdict</th>
+        <th class="px-4 py-2 text-right">Actions</th>
       </tr></thead>
-      <tbody>${r.TopIPs.map(ip => `
+      <tbody>${r.TopIPs.map(ip => {
+        const isTrusted = trusted.has(ip.IP);
+        const verdict = isTrusted ? 'TRUSTED' : (ip.Classification || 'UNKNOWN');
+        const verdictClass = isTrusted ? 'text-sky-400' : classColor(ip.Classification);
+        return `
         <tr class="border-b border-gray-800/50 hover:bg-gray-800/30">
           <td class="px-4 py-2 font-mono text-white">${esc(ip.IP)}</td>
           <td class="px-4 py-2 text-gray-300">${esc(ip.CountryName || ip.CountryCode || '--')}</td>
           <td class="px-4 py-2 text-gray-400">${esc(ip.City || '')}</td>
           <td class="px-4 py-2 text-right text-gray-300">${ip.Total}</td>
-          <td class="px-4 py-2 text-right ${ip.ErrorRate > 0.5 ? 'text-red-400' : 'text-gray-400'}">${(ip.ErrorRate * 100).toFixed(1)}%</td>
+          <td class="px-4 py-2 text-right ${ip.ErrorRate > 0.5 && !isTrusted ? 'text-red-400' : 'text-gray-400'}">${(ip.ErrorRate * 100).toFixed(1)}%</td>
           <td class="px-4 py-2 text-right text-gray-500 truncate max-w-xs" title="${esc(ip.TopRouter || '')}">${esc((ip.TopRouter || '').replace('@', '@\u200b'))}</td>
-          <td class="px-4 py-2 text-right font-semibold ${classColor(ip.Classification)}">${esc(ip.Classification || 'UNKNOWN')}</td>
-        </tr>`).join('')}
+          <td class="px-4 py-2 text-right font-semibold ${verdictClass}">${esc(verdict)}</td>
+          <td class="px-4 py-2 text-right">
+            <div class="flex items-center justify-end gap-1.5">
+              <button onclick="toggleTrust('${esc(ip.IP)}', this, ${isTrusted})"
+                class="text-[10px] px-2 py-0.5 rounded-full border transition font-semibold ${isTrusted ? 'border-sky-600 text-sky-400 bg-sky-950/50 hover:bg-sky-950' : 'border-gray-700 text-gray-500 hover:border-sky-600 hover:text-sky-400'}">
+                ${isTrusted ? '✓ Trusted' : 'Trust'}
+              </button>
+              ${!isTrusted ? `<button onclick="blockIP('${esc(ip.IP)}', this)"
+                class="text-[10px] px-2 py-0.5 rounded-full border border-gray-700 text-gray-500 hover:border-red-700 hover:text-red-400 transition font-semibold">
+                Block
+              </button>` : ''}
+            </div>
+          </td>
+        </tr>`;
+      }).join('')}
       </tbody></table>`;
   }
 
@@ -1184,6 +1206,26 @@ async function manualBlock() {
 function promptBlockIP(btn) {
   const ip = prompt('Enter the attacker IP address to block:');
   if (ip) blockIP(ip.trim(), btn);
+}
+
+async function toggleTrust(ip, btn, currentlyTrusted) {
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = '…';
+  try {
+    const method = currentlyTrusted ? 'DELETE' : 'POST';
+    const res = await fetch('/api/v1/intel/whitelist', {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip }),
+    });
+    if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error ?? `HTTP ${res.status}`); }
+    await loadIntel();
+  } catch (e) {
+    btn.textContent = '✗';
+    btn.disabled = false;
+    setTimeout(() => { btn.textContent = orig; }, 2000);
+  }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
