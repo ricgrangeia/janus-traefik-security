@@ -6,6 +6,36 @@ Janus uses [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.0.0] — 2026-04-20
+
+### Added — Stage 10: Dashboard Authentication (1.0 milestone)
+
+- `internal/web/auth/` — new package for single-admin session authentication
+  - `password.go` — argon2id PHC hash/verify (`golang.org/x/crypto/argon2`)
+  - `session.go` — in-memory `SessionStore` with 8 h sliding TTL
+  - `guard.go` — `Guard.Middleware` protecting every non-public route; `POST /api/login`, `POST /api/logout`, `GET /api/auth/status`; bearer-token fallback; per-IP login-attempt throttle (5 / 15 min)
+  - `password_test.go` — hash round-trip, distinct salts, malformed-input rejection
+- `internal/web/static/login.html` — dark-theme login page matching dashboard styling
+- `janus hash-password` subcommand — generates a PHC argon2id hash from stdin
+- Sign-out button in the dashboard header (hidden when auth is disabled)
+- `JANUS_ADMIN_PASSWORD_HASH` env var — when unset, dashboard is unauthenticated and a startup WARN is logged
+- `JANUS_API_TOKEN` env var — optional bearer token for scripted access (`Authorization: Bearer …`)
+
+### Changed
+
+- Route registration split into public (`/auth`, `/login.html`, `/api/login`, `/api/logout`, `/api/auth/status`) and protected (everything else) sub-muxes; protected sub-mux wrapped in `Guard.Middleware`
+- Unauthenticated HTML requests redirect to `/login.html`; unauthenticated API requests get `401 JSON`
+- Session cookie: `HttpOnly`, `SameSite=Strict`, `Secure` auto-set when the request arrives over HTTPS (direct TLS or `X-Forwarded-Proto: https`)
+- README documents the Docker Compose `$$` escaping gotcha for the argon2id hash (every `$` must be doubled when passed through a compose file or `.env`)
+
+### Security
+
+- Passwords never stored in plaintext — only PHC argon2id hashes in environment
+- Constant-time comparison for both password verification and bearer-token matching
+- Failed logins logged with originating IP; throttled to resist brute force
+
+---
+
 ## [0.9.0] — 2026-04-20
 
 ### Added — Stage 9: DDD Refactor & Test Coverage

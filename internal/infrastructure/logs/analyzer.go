@@ -135,6 +135,37 @@ func (a *TrafficAnalyzer) TopIPs(n int) []IPStats {
 	return stats
 }
 
+// StatsForIP returns the aggregated stats for a single IP, if tracked.
+func (a *TrafficAnalyzer) StatsForIP(ip string) (IPStats, bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	c, ok := a.counts[ip]
+	if !ok {
+		return IPStats{}, false
+	}
+	er := 0.0
+	if c.total > 0 {
+		er = float64(c.count4xx+c.count5xx) / float64(c.total)
+	}
+	topRouter, maxH := "", 0
+	for r, h := range c.routers {
+		if h > maxH {
+			maxH = h
+			topRouter = r
+		}
+	}
+	return IPStats{
+		IP:        ip,
+		Total:     c.total,
+		Count2xx:  c.count2xx,
+		Count4xx:  c.count4xx,
+		Count5xx:  c.count5xx,
+		ErrorRate: er,
+		TopRouter: topRouter,
+		LastSeen:  c.lastSeen,
+	}, true
+}
+
 // UniqueIPCount returns the number of distinct IPs tracked in the retention window.
 func (a *TrafficAnalyzer) UniqueIPCount() int {
 	a.mu.RLock()

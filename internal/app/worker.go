@@ -23,7 +23,25 @@ import (
 type ThreatNotifier interface {
 	Enabled() bool
 	SendThreatAlert(serviceName, classification, reasoning, fix string) error
+	SendAutoBlockAlert(a telegram.AutoBlockAlert) error
 }
+
+// IPContext is enrichment info an optional IPEnricher can provide about an IP.
+// Any field may be zero-valued when unknown.
+type IPContext struct {
+	CountryCode string
+	CountryName string
+	City        string
+	TopRouter   string
+	Hits        int
+	Count4xx    int
+	Count5xx    int
+	ErrorRate   float64
+}
+
+// IPEnricher resolves an IP to its enrichment context (geo + traffic).
+// When nil, auto-block alerts fall back to the minimal template.
+type IPEnricher func(ip string) IPContext
 
 // AIAuditWorker runs the AI enrichment pipeline on a ticker and stores the
 // latest AI-enriched AuditReport for the HTTP handler to read.
@@ -38,6 +56,7 @@ type AIAuditWorker struct {
 	notifier          ThreatNotifier
 	store             storage.Store
 	shield            *firewall.ShieldService
+	enrichIP          IPEnricher
 	threatSeverityMin int // alert when bot_scan AI severity >= this value
 	autoBlockMin      int // auto-block when bot_scan severity >= this value (default 10)
 
@@ -82,6 +101,13 @@ func (w *AIAuditWorker) WithNotifier(n *telegram.Notifier, severityMin int) *AIA
 // Accepts any Store — JSON Repository or SQLiteRepository both qualify.
 func (w *AIAuditWorker) WithStorage(s storage.Store) *AIAuditWorker {
 	w.store = s
+	return w
+}
+
+// WithIPEnricher attaches an enrichment callback used to decorate auto-block alerts
+// with geo + traffic context.
+func (w *AIAuditWorker) WithIPEnricher(fn IPEnricher) *AIAuditWorker {
+	w.enrichIP = fn
 	return w
 }
 
@@ -276,12 +302,26 @@ func (w *AIAuditWorker) fireThreatAlerts(ai *domain.AIInsights) {
 			} else {
 				slog.Warn("Shield: IP auto-blocked", "ip", alert.SuspectedIP, "service", alert.ServiceName)
 				if w.notifier != nil && w.notifier.Enabled() {
-					_ = w.notifier.SendThreatAlert(
-						alert.ServiceName,
-						"IP_BANNED",
-						fmt.Sprintf("Janus has automatically blocked %s due to critical bot activity (severity %d/10)", alert.SuspectedIP, ai.Severity),
-						"Review and unblock via the Janus Shield tab if this was a false positive.",
-					)
+					payload := telegram.AutoBlockAlert{
+						IP:          alert.SuspectedIP,
+						ServiceName: alert.ServiceName,
+						Severity:    ai.Severity,
+						Reasoning:   alert.Reasoning,
+					}
+					if w.enrichIP != nil {
+						ctx := w.enrichIP(alert.SuspectedIP)
+						payload.CountryCode = ctx.CountryCode
+						payload.CountryName = ctx.CountryName
+						payload.City = ctx.City
+						payload.TopRouter = ctx.TopRouter
+						payload.Hits = ctx.Hits
+						payload.Count4xx = ctx.Count4xx
+						payload.Count5xx = ctx.Count5xx
+						payload.ErrorRate = ctx.ErrorRate
+					}
+					if err := w.notifier.SendAutoBlockAlert(payload); err != nil {
+						slog.Warn("Telegram auto-block alert failed", "ip", alert.SuspectedIP, "err", err)
+					}
 				}
 			}
 		}

@@ -149,6 +149,27 @@ func main() {
 		trafficAnalyzer = janusLogs.NewTrafficAnalyzer(cfg.AccessLogPath, 60*time.Second)
 	}
 
+	// Attach IP enricher to the AI worker so auto-block alerts carry geo + traffic context.
+	if aiWorker != nil {
+		aiWorker.WithIPEnricher(func(ip string) app.IPContext {
+			ctx := app.IPContext{}
+			meta := geoReader.Lookup(ip)
+			ctx.CountryCode = meta.CountryCode
+			ctx.CountryName = meta.CountryName
+			ctx.City = meta.City
+			if trafficAnalyzer != nil {
+				if s, ok := trafficAnalyzer.StatsForIP(ip); ok {
+					ctx.TopRouter = s.TopRouter
+					ctx.Hits = s.Total
+					ctx.Count4xx = s.Count4xx
+					ctx.Count5xx = s.Count5xx
+					ctx.ErrorRate = s.ErrorRate
+				}
+			}
+			return ctx
+		})
+	}
+
 	// ── Ban review worker (requires AI + tailer) ─────────────────────────
 	var reviewWorker *app.BanReviewWorker
 	if llmClient != nil && logTailer != nil {

@@ -1,6 +1,6 @@
 # Janus — Traefik Security Bridge
 
-> **Version:** 0.9.0 · **License:** MIT · **Stack:** Go 1.22 · Docker · Tailwind CSS
+> **Version:** 1.0.0 · **License:** MIT · **Stack:** Go 1.22 · Docker · Tailwind CSS
 
 Janus is a lightweight Go sidecar that runs alongside Traefik and bridges the gap between **DevOps** (who configures the proxy) and **Developers** (who need to understand what is exposed and how). It surfaces security gaps, detects active attacks, blocks hostile IPs, and delivers AI-powered threat intelligence — all from a single embedded dashboard.
 
@@ -27,6 +27,7 @@ Janus sits inside the same Docker network as Traefik (`proxy-network`) and polls
 | 7.1 | Prison Guard | Post-ban 403 log monitoring, AI "Watch & Forgive" auto-unblock |
 | 8 | Threat Intel | GeoIP enrichment, Top-20 heavy-hitter analysis, hostile cluster detection |
 | 9 | DDD Refactor | HTTP API extracted into `internal/web/api/`, graceful shutdown, unit tests |
+| 10 | Dashboard Auth | argon2id single-admin login, sessions, bearer token, login throttle |
 
 ---
 
@@ -149,6 +150,22 @@ docker compose run --rm janus hash-password
 
 Sessions are in-memory (restart = re-login), `HttpOnly` + `SameSite=Strict` cookies, `Secure` flag auto-set when served over HTTPS. Login throttle: 5 attempts / 15 min per IP.
 
+> ⚠ **Compose / Portainer `$` escaping gotcha.** The argon2id hash contains `$` separators (e.g. `$argon2id$v=19$m=…$salt$hash`). Docker Compose treats `$` as variable expansion, so if you paste the hash verbatim into a `docker-compose.yml` `environment:` block or a `.env` file loaded by compose, segments like `$v`, `$m`, `$i…` expand to empty strings and the stored value becomes garbage — login will fail with "invalid credentials" for any password.
+>
+> **Fix: double every `$`** when the value goes through compose:
+>
+> ```env
+> JANUS_ADMIN_PASSWORD_HASH=$$argon2id$$v=19$$m=65536,t=3,p=4$$<salt>$$<hash>
+> ```
+>
+> Compose un-escapes `$$` → `$` before handing it to the container. Verify with:
+>
+> ```bash
+> docker inspect <janus-container> --format '{{range .Config.Env}}{{println .}}{{end}}' | grep JANUS_ADMIN
+> ```
+>
+> You should see single `$` signs matching the generator output. If you use **Portainer's "Environment variables" panel** (key/value inputs, not the stack YAML), paste the raw hash as-is — that UI stores the literal value and no doubling is needed.
+
 ### Alerts
 
 | Variable | Default | Description |
@@ -188,7 +205,7 @@ janus/
 ├── Dockerfile                     # Multi-stage → scratch image
 ├── docker-compose.yml             # Joins proxy-network + ai-network
 ├── .env.example                   # All environment variables documented
-├── VERSION                        # SemVer (currently 0.9.0)
+├── VERSION                        # SemVer (currently 1.0.0)
 ├── CHANGELOG.md                   # Full release history
 ├── configs/
 │   └── policies.json              # Default security policies (embedded)
@@ -223,7 +240,10 @@ janus/
         │   ├── dto.go             # JSON response DTOs (Anti-Corruption Layer)
         │   ├── converters.go      # domain → DTO mappers
         │   └── server.go          # Server struct + route registration
-        └── static/index.html      # Embedded Tailwind SPA (4 tabs)
+        ├── auth/                  # Single-admin auth (argon2id, sessions, guard)
+        └── static/
+            ├── index.html         # Embedded Tailwind SPA (4 tabs)
+            └── login.html         # Sign-in page
 ```
 
 ---

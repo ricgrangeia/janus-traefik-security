@@ -29,6 +29,61 @@ func NewNotifier(token, chatID string) *Notifier {
 // Enabled returns true when both token and chatID are configured.
 func (n *Notifier) Enabled() bool { return n.token != "" && n.chatID != "" }
 
+// AutoBlockAlert carries the enriched payload sent when Janus auto-blocks an IP.
+type AutoBlockAlert struct {
+	IP          string
+	ServiceName string
+	Severity    int // 0-10
+	Reasoning   string
+
+	// Enrichment — any field may be zero-valued when unavailable.
+	CountryCode string // "US", "--"
+	CountryName string
+	City        string
+	TopRouter   string
+	Hits        int
+	Count4xx    int
+	Count5xx    int
+	ErrorRate   float64 // 0.0-1.0
+}
+
+// SendAutoBlockAlert sends a rich IP_BANNED alert with geo + traffic enrichment.
+func (n *Notifier) SendAutoBlockAlert(a AutoBlockAlert) error {
+	loc := "unknown"
+	if a.CountryName != "" || a.City != "" {
+		switch {
+		case a.City != "" && a.CountryName != "":
+			loc = fmt.Sprintf("%s, %s (%s)", a.City, a.CountryName, a.CountryCode)
+		case a.CountryName != "":
+			loc = fmt.Sprintf("%s (%s)", a.CountryName, a.CountryCode)
+		default:
+			loc = a.City
+		}
+	}
+	traffic := "no traffic data"
+	if a.Hits > 0 {
+		traffic = fmt.Sprintf("%d hits · %d 4xx · %d 5xx · %.1f%% error rate",
+			a.Hits, a.Count4xx, a.Count5xx, a.ErrorRate*100)
+	}
+	router := a.TopRouter
+	if router == "" {
+		router = a.ServiceName
+	}
+
+	text := fmt.Sprintf(
+		"🚫 *IP AUTO-BLOCKED*\n"+
+			"IP: `%s`\n"+
+			"Location: %s\n"+
+			"Top Router: `%s`\n"+
+			"Traffic: %s\n"+
+			"AI Severity: *%d/10*\n"+
+			"Reasoning: \"%s\"\n"+
+			"_Review and unblock via the Janus Shield tab if this was a false positive._",
+		a.IP, loc, router, traffic, a.Severity, a.Reasoning,
+	)
+	return n.send(text)
+}
+
 // SendThreatAlert sends a formatted bot-scan threat alert.
 // serviceName, classification, reasoning, and fix are inserted into the message template.
 func (n *Notifier) SendThreatAlert(serviceName, classification, reasoning, fix string) error {
