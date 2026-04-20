@@ -271,7 +271,7 @@ It does not replace Traefik's dashboard, Prometheus, or Grafana. It is the **fas
 
 ## Author
 
-Ricardo Dias — Software Engineer — Portugal
+Ricardo Grangeia — Software Engineer — Portugal
 
 [![Website](https://img.shields.io/badge/Website-ricardo.grangeia.pt-blue)](https://ricardo.grangeia.dias)
 [![Email](https://img.shields.io/badge/Email-Contact%20Me-red)](mailto:ricardo@grangeia.pt)
