@@ -58,9 +58,28 @@
         class="text-xs px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 transition text-white">
         ↻ Now
       </button>
+      <button
+        id="signout-btn"
+        onclick="signOut()"
+        class="text-xs px-3 py-1.5 rounded border border-gray-700 hover:bg-gray-800 transition text-gray-300 hidden">
+        Sign out
+      </button>
     </div>
   </div>
 </header>
+<script>
+  (async () => {
+    try {
+      const res = await fetch('/api/auth/status');
+      const s = await res.json();
+      if (s.enabled) document.getElementById('signout-btn').classList.remove('hidden');
+    } catch {}
+  })();
+  async function signOut() {
+    try { await fetch('/api/logout', { method: 'POST' }); } catch {}
+    window.location.href = '/login.html';
+  }
+</script>
 
 <!-- ── Tab bar ────────────────────────────────────────────────────────── -->
 <nav class="border-b border-gray-800 px-6">

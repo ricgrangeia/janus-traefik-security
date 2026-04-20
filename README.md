@@ -1,6 +1,6 @@
 # Janus — Traefik Security Bridge
 
-> **Version:** 0.8.0 · **License:** MIT · **Stack:** Go 1.22 · Docker · Tailwind CSS
+> **Version:** 0.9.0 · **License:** MIT · **Stack:** Go 1.22 · Docker · Tailwind CSS
 
 Janus is a lightweight Go sidecar that runs alongside Traefik and bridges the gap between **DevOps** (who configures the proxy) and **Developers** (who need to understand what is exposed and how). It surfaces security gaps, detects active attacks, blocks hostile IPs, and delivers AI-powered threat intelligence — all from a single embedded dashboard.
 
@@ -26,6 +26,7 @@ Janus sits inside the same Docker network as Traefik (`proxy-network`) and polls
 | 7 | Active Defense | IP blocklist (Shield), auto Fail2Ban, manual block/unblock |
 | 7.1 | Prison Guard | Post-ban 403 log monitoring, AI "Watch & Forgive" auto-unblock |
 | 8 | Threat Intel | GeoIP enrichment, Top-20 heavy-hitter analysis, hostile cluster detection |
+| 9 | DDD Refactor | HTTP API extracted into `internal/web/api/`, graceful shutdown, unit tests |
 
 ---
 
@@ -45,9 +46,12 @@ Janus sits inside the same Docker network as Traefik (`proxy-network`) and polls
 - "Ask Janus-AI" button for a 3-paragraph executive security summary over the last 100 audits
 
 ### Shield
+
+- **Trusted IPs** — inline add/remove; immune from blocking and never flagged as hostile
 - Live blocked-IP list with SVG sparklines (30-min activity), PERSISTENT ATTACKER / COOLING DOWN AI verdict badges
 - Unblock button per IP
-- Manual IP block form
+- Manual IP block form (warns if target is already trusted)
+- Admin allowlist management
 - Traefik wiring instructions
 
 ### Intelligence
@@ -129,6 +133,22 @@ open http://localhost:9090
 | --- | --- | --- |
 | `JANUS_GEOIP_DB_PATH` | `/app/data/GeoLite2-City.mmdb` | MaxMind GeoLite2-City database path (optional) |
 
+### Authentication
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `JANUS_ADMIN_PASSWORD_HASH` | *(empty)* | argon2id PHC hash — when unset, the dashboard is **unauthenticated**. Generate with `janus hash-password`. |
+| `JANUS_API_TOKEN` | *(empty)* | Optional bearer token for scripted access (`Authorization: Bearer …`) |
+
+Generate a hash:
+
+```bash
+docker compose run --rm janus hash-password
+# type password, copy output, paste into .env as JANUS_ADMIN_PASSWORD_HASH='...'
+```
+
+Sessions are in-memory (restart = re-login), `HttpOnly` + `SameSite=Strict` cookies, `Secure` flag auto-set when served over HTTPS. Login throttle: 5 attempts / 15 min per IP.
+
 ### Alerts
 
 | Variable | Default | Description |
@@ -163,12 +183,12 @@ open http://localhost:9090
 
 ```text
 janus/
-├── cmd/janus/main.go              # HTTP server, all API handlers, config
+├── cmd/janus/main.go              # Wiring only: config, DI, worker & server lifecycle
 ├── go.mod                         # Go 1.22; minimal external deps
 ├── Dockerfile                     # Multi-stage → scratch image
 ├── docker-compose.yml             # Joins proxy-network + ai-network
 ├── .env.example                   # All environment variables documented
-├── VERSION                        # SemVer (currently 0.8.0)
+├── VERSION                        # SemVer (currently 0.9.0)
 ├── CHANGELOG.md                   # Full release history
 ├── configs/
 │   └── policies.json              # Default security policies (embedded)
@@ -198,7 +218,12 @@ janus/
     │   └── traefik/               # Traefik API client + ACL mapper
     ├── pulse/                     # Prometheus text-format parser
     ├── security/                  # Security Scorer
-    └── web/static/index.html      # Embedded Tailwind SPA (4 tabs)
+    └── web/
+        ├── api/                   # HTTP adapter
+        │   ├── dto.go             # JSON response DTOs (Anti-Corruption Layer)
+        │   ├── converters.go      # domain → DTO mappers
+        │   └── server.go          # Server struct + route registration
+        └── static/index.html      # Embedded Tailwind SPA (4 tabs)
 ```
 
 ---

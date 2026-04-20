@@ -19,6 +19,7 @@ import (
 	"github.com/janus-project/janus/internal/infrastructure/storage"
 	traefikinfra "github.com/janus-project/janus/internal/infrastructure/traefik"
 	"github.com/janus-project/janus/internal/pulse"
+	"github.com/janus-project/janus/internal/web/auth"
 )
 
 // Server is the HTTP adapter. It holds only references to collaborators it
@@ -38,6 +39,7 @@ type Server struct {
 	RichRepo        storage.RichStore
 	Policies        []domain.Policy
 	StaticFS        fs.FS
+	Guard           *auth.Guard
 
 	AlertThreshold float64
 	AIEnabled      bool
@@ -49,33 +51,44 @@ type Server struct {
 }
 
 // Handler returns the *http.ServeMux with every Janus route registered.
+// Public routes: /login.html (static), /api/login, /api/logout, /api/auth/status, /auth (Traefik forwardAuth).
+// Everything else is wrapped in the Guard middleware.
 func (s *Server) Handler() http.Handler {
+	protected := http.NewServeMux()
+	protected.Handle("/", http.FileServer(http.FS(s.StaticFS)))
+	protected.HandleFunc("/api/status", s.handleStatus)
+	protected.HandleFunc("/api/v1/history", s.handleHistory)
+	protected.HandleFunc("/api/v1/trend", s.handleTrend)
+
+	protected.HandleFunc("GET /api/v1/shield", s.handleShieldGet)
+	protected.HandleFunc("POST /api/v1/shield/block", s.handleShieldBlock)
+	protected.HandleFunc("POST /api/v1/shield/unblock", s.handleShieldUnblock)
+	protected.HandleFunc("GET /api/v1/shield/admin-whitelist", s.handleAdminWhitelistGet)
+	protected.HandleFunc("POST /api/v1/shield/admin-whitelist", s.handleAdminWhitelistAdd)
+	protected.HandleFunc("DELETE /api/v1/shield/admin-whitelist", s.handleAdminWhitelistRemove)
+
+	protected.HandleFunc("GET /api/v1/intel/whitelist", s.handleIntelWhitelistGet)
+	protected.HandleFunc("POST /api/v1/intel/whitelist", s.handleIntelWhitelistAdd)
+	protected.HandleFunc("DELETE /api/v1/intel/whitelist", s.handleIntelWhitelistRemove)
+	protected.HandleFunc("GET /api/v1/intel", s.handleIntel)
+	protected.HandleFunc("GET /api/v1/intel/ip-activity", s.handleIntelIPActivity)
+	protected.HandleFunc("POST /api/v1/intel/analyze", s.handleIntelAnalyze)
+	protected.HandleFunc("GET /api/v1/intel/report", s.handleIntelReport)
+
+	protected.HandleFunc("/api/v1/ai/consult", s.handleConsult)
+	protected.HandleFunc("/api/v1/ai-insights", s.handleAIInsights)
+
 	mux := http.NewServeMux()
-	mux.Handle("/", http.FileServer(http.FS(s.StaticFS)))
-
-	mux.HandleFunc("GET /auth", s.handleAuth)
-	mux.HandleFunc("/api/status", s.handleStatus)
-	mux.HandleFunc("/api/v1/history", s.handleHistory)
-	mux.HandleFunc("/api/v1/trend", s.handleTrend)
-
-	mux.HandleFunc("GET /api/v1/shield", s.handleShieldGet)
-	mux.HandleFunc("POST /api/v1/shield/block", s.handleShieldBlock)
-	mux.HandleFunc("POST /api/v1/shield/unblock", s.handleShieldUnblock)
-	mux.HandleFunc("GET /api/v1/shield/admin-whitelist", s.handleAdminWhitelistGet)
-	mux.HandleFunc("POST /api/v1/shield/admin-whitelist", s.handleAdminWhitelistAdd)
-	mux.HandleFunc("DELETE /api/v1/shield/admin-whitelist", s.handleAdminWhitelistRemove)
-
-	mux.HandleFunc("GET /api/v1/intel/whitelist", s.handleIntelWhitelistGet)
-	mux.HandleFunc("POST /api/v1/intel/whitelist", s.handleIntelWhitelistAdd)
-	mux.HandleFunc("DELETE /api/v1/intel/whitelist", s.handleIntelWhitelistRemove)
-	mux.HandleFunc("GET /api/v1/intel", s.handleIntel)
-	mux.HandleFunc("GET /api/v1/intel/ip-activity", s.handleIntelIPActivity)
-	mux.HandleFunc("POST /api/v1/intel/analyze", s.handleIntelAnalyze)
-	mux.HandleFunc("GET /api/v1/intel/report", s.handleIntelReport)
-
-	mux.HandleFunc("/api/v1/ai/consult", s.handleConsult)
-	mux.HandleFunc("/api/v1/ai-insights", s.handleAIInsights)
-
+	mux.HandleFunc("GET /auth", s.handleAuth) // Traefik forwardAuth target — stays public
+	mux.Handle("GET /login.html", http.FileServer(http.FS(s.StaticFS)))
+	if s.Guard != nil {
+		mux.HandleFunc("POST /api/login", s.Guard.HandleLogin)
+		mux.HandleFunc("POST /api/logout", s.Guard.HandleLogout)
+		mux.HandleFunc("GET /api/auth/status", s.Guard.HandleStatus)
+		mux.Handle("/", s.Guard.Middleware(protected))
+	} else {
+		mux.Handle("/", protected)
+	}
 	return mux
 }
 

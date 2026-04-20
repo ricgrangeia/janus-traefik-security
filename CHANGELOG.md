@@ -6,6 +6,33 @@ Janus uses [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.9.0] — 2026-04-20
+
+### Added — Stage 9: DDD Refactor & Test Coverage
+
+- `internal/web/api/` — new HTTP adapter package isolating every handler from `main.go`
+  - `dto.go` — all JSON response types (`StatusResponse`, `OverviewDTO`, `RouterAuditDTO`, `AIInsightsDTO`, …); JSON tags live here so `domain/` stays pure
+  - `converters.go` — domain → DTO mappers (Anti-Corruption Layer)
+  - `server.go` — `Server` struct holding all collaborators; `Handler()` registers every route including `/auth`, `/api/status`, `/api/v1/history`, `/api/v1/trend`, `/api/v1/shield/*`, `/api/v1/intel/*`, `/api/v1/ai/*`
+- Unit tests for pure-logic packages: `internal/pulse/monitor_test.go`, `internal/security/auditor_test.go`, `internal/app/policy_test.go`, `internal/infrastructure/firewall/shield_test.go`
+- **Shield tab — Trusted IPs management**: inline add/remove UI (formerly split between Shield read-only pills and Intelligence management)
+
+### Changed
+
+- Graceful shutdown via `signal.NotifyContext(SIGINT, SIGTERM)` + `sync.WaitGroup` + `http.Server.Shutdown` with a 10 s deadline; every worker exits cleanly on Ctrl-C
+- `cmd/janus/main.go` shrank from ~994 lines to ~300 lines — now pure wiring (config, dependency construction, worker/server lifecycle)
+- Trusted IPs management relocated from Intelligence tab to Shield tab so all IP controls (Trusted, Blocked, Admin Allowlist) live in one place
+- Block-IP flow warns when the target is already trusted and links to the Trusted IPs section
+
+### Fixed
+
+- `Shield.IsBlocked` now checks immunity **before** the blocklist, preventing lockout when an already-blocked IP is later added to the trusted list
+- `FetchMetrics` uses `io.ReadAll` instead of a manual byte-buffer loop
+- `storage.SQLiteRepository` now logs `rows.Scan` errors via `slog.Warn` instead of swallowing them
+- Removed dead `fireDriftAlerts`; `app/review.go` verdict "C" label clarified to `INCONCLUSIVE`
+
+---
+
 ## [0.8.0] — 2026-04-20
 
 ### Added — Stage 8: Threat Intelligence & Geo-Reporting

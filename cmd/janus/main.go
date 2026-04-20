@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"log/slog"
@@ -10,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -25,6 +28,7 @@ import (
 	"github.com/janus-project/janus/internal/security"
 	janusWeb "github.com/janus-project/janus/internal/web"
 	"github.com/janus-project/janus/internal/web/api"
+	"github.com/janus-project/janus/internal/web/auth"
 )
 
 // config holds all runtime configuration sourced from environment variables.
@@ -53,9 +57,15 @@ type config struct {
 	AccessLogPath     string
 	GeoIPPath         string
 	WhitelistPath     string
+	AdminPasswordHash string
+	APIToken          string
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "hash-password" {
+		runHashPassword()
+		return
+	}
 	cfg := loadConfig()
 
 	slog.Info("Janus starting",
@@ -158,6 +168,14 @@ func main() {
 		log.Fatalf("embed sub-FS: %v", err)
 	}
 
+	// ── Auth guard (dashboard login) ────────────────────────────────────
+	guard := auth.NewGuard(cfg.AdminPasswordHash, cfg.APIToken)
+	if !guard.Enabled() {
+		slog.Warn("dashboard authentication is DISABLED — set JANUS_ADMIN_PASSWORD_HASH to protect the UI before exposing it to the internet")
+	} else {
+		slog.Info("dashboard authentication enabled", "api_token_set", cfg.APIToken != "")
+	}
+
 	srvAPI := &api.Server{
 		Client:          client,
 		Auditor:         auditor,
@@ -173,6 +191,7 @@ func main() {
 		RichRepo:        richRepo,
 		Policies:        policies,
 		StaticFS:        sub,
+		Guard:           guard,
 		AlertThreshold:  cfg.AlertThreshold,
 		AIEnabled:       cfg.VLLMEnabled,
 	}
@@ -269,6 +288,8 @@ func loadConfig() config {
 		AccessLogPath:     getEnv("JANUS_ACCESS_LOG_PATH", "/logs/access.log"),
 		GeoIPPath:         getEnv("JANUS_GEOIP_DB_PATH", "/app/data/GeoLite2-City.mmdb"),
 		WhitelistPath:     getEnv("JANUS_WHITELIST_PATH", "/app/data/whitelist.json"),
+		AdminPasswordHash: getEnv("JANUS_ADMIN_PASSWORD_HASH", ""),
+		APIToken:          getEnv("JANUS_API_TOKEN", ""),
 	}
 	if v := os.Getenv("JANUS_AUTO_BLOCK_MIN"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 10 {
@@ -299,4 +320,25 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// runHashPassword reads a password from stdin and prints a PHC argon2id hash.
+// Usage: janus hash-password   (then type or pipe the password)
+func runHashPassword() {
+	fmt.Fprint(os.Stderr, "Enter password (input may be visible): ")
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		log.Fatalf("read password: %v", err)
+	}
+	pw := strings.TrimRight(line, "\r\n")
+	if pw == "" {
+		log.Fatal("password cannot be empty")
+	}
+	hash, err := auth.HashPassword(pw)
+	if err != nil {
+		log.Fatalf("hash: %v", err)
+	}
+	fmt.Println(hash)
+	fmt.Fprintln(os.Stderr, "\nExport this as JANUS_ADMIN_PASSWORD_HASH (single quotes to preserve $ signs).")
 }
