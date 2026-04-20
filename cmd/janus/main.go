@@ -16,6 +16,7 @@ import (
 	"github.com/janus-project/janus/domain"
 	"github.com/janus-project/janus/internal/app"
 	"github.com/janus-project/janus/internal/infrastructure/firewall"
+	"github.com/janus-project/janus/internal/infrastructure/geoip"
 	traefikinfra "github.com/janus-project/janus/internal/infrastructure/traefik"
 	"github.com/janus-project/janus/internal/infrastructure/llm"
 	janusLogs "github.com/janus-project/janus/internal/infrastructure/logs"
@@ -48,6 +49,7 @@ type config struct {
 	ShieldPath        string
 	AutoBlockMin      int    // severity threshold for automatic IP blocking (default 10)
 	AccessLogPath     string // path to Traefik's JSON access log
+	GeoIPPath         string // path to GeoLite2-City.mmdb (optional)
 }
 
 // ── API response DTOs ─────────────────────────────────────────────────────
@@ -237,13 +239,27 @@ func main() {
 		go aiWorker.Run(ctx)
 	}
 
+	// ── GeoIP reader (graceful no-op if DB not present) ─────────────────
+	geoReader, err := geoip.NewReader(cfg.GeoIPPath)
+	if err != nil {
+		slog.Warn("GeoIP database unavailable", "path", cfg.GeoIPPath, "err", err)
+		geoReader, _ = geoip.NewReader("") // no-op reader
+	}
+	defer geoReader.Close()
+
 	// ── Access-log tailer ────────────────────────────────────────────────
 	var logTailer *janusLogs.AccessLogTailer
+	var trafficAnalyzer *janusLogs.TrafficAnalyzer
 	if cfg.AccessLogPath != "" {
 		logTailer = janusLogs.NewAccessLogTailer(cfg.AccessLogPath, 5*time.Second)
 		tailCtx, tailCancel := context.WithCancel(context.Background())
 		_ = tailCancel
 		go logTailer.Run(tailCtx)
+
+		trafficAnalyzer = janusLogs.NewTrafficAnalyzer(cfg.AccessLogPath, 60*time.Second)
+		analyzerCtx, analyzerCancel := context.WithCancel(context.Background())
+		_ = analyzerCancel
+		go trafficAnalyzer.Run(analyzerCtx)
 	}
 
 	// ── Ban review worker (requires AI + tailer) ─────────────────────────
@@ -253,6 +269,12 @@ func main() {
 		reviewCtx, reviewCancel := context.WithCancel(context.Background())
 		_ = reviewCancel
 		go reviewWorker.Run(reviewCtx)
+	}
+
+	// ── Threat intelligence service (requires AI + traffic analyzer) ─────
+	var intelSvc *app.ThreatIntelService
+	if llmClient != nil && trafficAnalyzer != nil {
+		intelSvc = app.NewThreatIntelService(trafficAnalyzer, geoReader, llmClient)
 	}
 
 	// ── HTTP server ───────────────────────────────────────────────────────
@@ -428,6 +450,47 @@ func main() {
 		}
 		slog.Info("Shield: IP unblocked via API", "ip", body.IP)
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "unblocked", "ip": body.IP})
+	})
+
+	// GET /api/v1/intel — returns the latest threat intelligence report as JSON.
+	mux.HandleFunc("GET /api/v1/intel", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		if intelSvc == nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "threat intel requires AI and JANUS_ACCESS_LOG_PATH to be configured"})
+			return
+		}
+		report := intelSvc.LatestReport()
+		if report == nil {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(report)
+	})
+
+	// POST /api/v1/intel/analyze — triggers a background threat intelligence analysis.
+	mux.HandleFunc("POST /api/v1/intel/analyze", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if intelSvc == nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "threat intel requires AI and JANUS_ACCESS_LOG_PATH to be configured"})
+			return
+		}
+		intelSvc.AnalyzeAsync()
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "analysis started"})
+	})
+
+	// GET /api/v1/intel/report — downloads the latest threat report as Markdown.
+	mux.HandleFunc("GET /api/v1/intel/report", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="janus-threat-report.md"`)
+		w.Header().Set("Cache-Control", "no-store")
+		md := "# Janus Threat Intelligence Report\n\nNo analysis has been run yet.\n"
+		if intelSvc != nil {
+			md = intelSvc.MarkdownReport()
+		}
+		_, _ = w.Write([]byte(md))
 	})
 
 	// GET /api/v1/ai/consult — on-demand executive summary over audit history.
@@ -730,6 +793,7 @@ func loadConfig() config {
 		DBPath:            getEnv("JANUS_DB_PATH", "/app/data/janus.db"),
 		ShieldPath:        getEnv("JANUS_SHIELD_PATH", "/rules/blocklist.yaml"),
 		AccessLogPath:     getEnv("JANUS_ACCESS_LOG_PATH", "/logs/access.log"),
+		GeoIPPath:         getEnv("JANUS_GEOIP_DB_PATH", "/app/data/GeoLite2-City.mmdb"),
 	}
 	if v := os.Getenv("JANUS_AUTO_BLOCK_MIN"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 10 {

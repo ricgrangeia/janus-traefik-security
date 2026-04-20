@@ -77,6 +77,10 @@
       class="tab-btn px-4 py-2 text-xs font-semibold border-b-2 border-transparent text-gray-500 hover:text-gray-300 -mb-px transition">
       Shield
     </button>
+    <button id="tab-intel" onclick="switchTab('intel')"
+      class="tab-btn px-4 py-2 text-xs font-semibold border-b-2 border-transparent text-gray-500 hover:text-gray-300 -mb-px transition">
+      Intelligence
+    </button>
   </div>
 </nav>
 
@@ -267,6 +271,71 @@
   </section>
 
 </div><!-- end #panel-shield -->
+
+<!-- ════════════════ INTELLIGENCE TAB ════════════════════════════════════ -->
+<div id="panel-intel" class="hidden space-y-6">
+
+  <!-- Actions bar -->
+  <section>
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest">Threat Intelligence</h2>
+        <p class="text-xs text-gray-600 mt-1">AI-powered analysis of the last hour of traffic — top attackers, hostile clusters, and geo breakdown.</p>
+      </div>
+      <div class="flex gap-2">
+        <button onclick="downloadIntelReport()"
+          class="text-xs px-3 py-1.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 transition">
+          ⬇ Download Report
+        </button>
+        <button onclick="triggerIntelAnalysis()"
+          id="intel-analyze-btn"
+          class="text-xs px-3 py-1.5 rounded bg-indigo-700 hover:bg-indigo-600 text-white font-semibold transition">
+          🔍 Run Analysis
+        </button>
+      </div>
+    </div>
+    <div id="intel-status" class="hidden text-xs text-indigo-400 mb-2"></div>
+  </section>
+
+  <!-- Summary -->
+  <section id="intel-summary-section" class="hidden">
+    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">Executive Summary</h2>
+    <div id="intel-summary" class="rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 text-sm text-gray-300 whitespace-pre-wrap leading-relaxed"></div>
+    <p id="intel-meta" class="text-xs text-gray-600 mt-2"></p>
+  </section>
+
+  <!-- Top IPs -->
+  <section>
+    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">Top Active IPs</h2>
+    <div id="intel-ips" class="rounded-lg border border-gray-800 overflow-hidden">
+      <p class="text-gray-600 text-sm px-4 py-3">Run an analysis to populate this table.</p>
+    </div>
+  </section>
+
+  <!-- Hostile Clusters -->
+  <section id="intel-clusters-section" class="hidden">
+    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">Hostile Clusters</h2>
+    <div id="intel-clusters" class="space-y-3"></div>
+  </section>
+
+  <!-- Attacker Nations -->
+  <section id="intel-nations-section" class="hidden">
+    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">Attacker Nations</h2>
+    <div id="intel-nations" class="rounded-lg border border-gray-800 overflow-hidden">
+      <table class="w-full text-xs">
+        <thead>
+          <tr class="border-b border-gray-800 text-gray-500">
+            <th class="px-4 py-2 text-left">Country</th>
+            <th class="px-4 py-2 text-right">IPs</th>
+            <th class="px-4 py-2 text-right">Threat Level</th>
+          </tr>
+        </thead>
+        <tbody id="intel-nations-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+</div><!-- end #panel-intel -->
 
 </main>
 
@@ -615,7 +684,7 @@ function renderAI(ai, aiEnabled) {
                 <span class="px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide bg-gray-800 ${typeColor(a.assessment)}">${esc(a.assessment)}</span>
                 ${a.assessment === 'bot_scan' ? `
                   ${a.suspected_ip
-                    ? `<button onclick="blockIP(${JSON.stringify(a.suspected_ip)}, this)"
+                    ? `<button onclick="blockIP('${esc(a.suspected_ip)}', this)"
                         class="ml-auto text-[10px] px-2 py-0.5 rounded bg-red-900 hover:bg-red-700 text-red-300 transition">
                         🚫 Block ${esc(a.suspected_ip)}
                       </button>`
@@ -777,7 +846,7 @@ function copyFix(btn, snippet) {
 
 // ── Tab switching ────────────────────────────────────────────────────────
 function switchTab(name) {
-  ['dashboard', 'policies', 'shield'].forEach(t => {
+  ['dashboard', 'policies', 'shield', 'intel'].forEach(t => {
     document.getElementById('panel-' + t).classList.toggle('hidden', t !== name);
     const btn = document.getElementById('tab-' + t);
     if (t === name) {
@@ -789,6 +858,98 @@ function switchTab(name) {
     }
   });
   if (name === 'shield') loadShield();
+  if (name === 'intel') loadIntel();
+}
+
+// ── Threat Intelligence ──────────────────────────────────────────────────
+async function loadIntel() {
+  const res = await fetch('/api/v1/intel').catch(() => null);
+  if (!res || res.status === 204 || res.status === 503) return;
+  const data = await res.json().catch(() => null);
+  if (!data) return;
+  renderIntel(data);
+}
+
+async function triggerIntelAnalysis() {
+  const btn = document.getElementById('intel-analyze-btn');
+  const status = document.getElementById('intel-status');
+  btn.disabled = true;
+  btn.textContent = '⏳ Analyzing…';
+  status.textContent = 'Analysis started — this may take 15–30 seconds.';
+  status.classList.remove('hidden');
+  await fetch('/api/v1/intel/analyze', { method: 'POST' }).catch(() => null);
+  setTimeout(async () => {
+    await loadIntel();
+    btn.disabled = false;
+    btn.textContent = '🔍 Run Analysis';
+    status.textContent = 'Analysis complete.';
+    setTimeout(() => status.classList.add('hidden'), 3000);
+  }, 20000);
+}
+
+function downloadIntelReport() {
+  window.location.href = '/api/v1/intel/report';
+}
+
+function renderIntel(r) {
+  if (r.Summary) {
+    document.getElementById('intel-summary').textContent = r.Summary;
+    const meta = document.getElementById('intel-meta');
+    const ts = r.GeneratedAt ? new Date(r.GeneratedAt).toLocaleString() : '';
+    meta.textContent = `Generated: ${ts}  |  Unique IPs tracked: ${r.UniqueIPs || 0}  |  Tokens: ${r.TokensUsed || 0}  |  Latency: ${r.LatencyMs || 0}ms`;
+    document.getElementById('intel-summary-section').classList.remove('hidden');
+  }
+
+  // Top IPs table
+  const ipsEl = document.getElementById('intel-ips');
+  if (r.TopIPs && r.TopIPs.length) {
+    const classColor = c => ({ HOSTILE: 'text-red-400', SUSPICIOUS: 'text-amber-400', LEGITIMATE: 'text-emerald-400', UNKNOWN: 'text-gray-500' }[c] || 'text-gray-500');
+    ipsEl.innerHTML = `<table class="w-full text-xs">
+      <thead><tr class="border-b border-gray-800 text-gray-500">
+        <th class="px-4 py-2 text-left">IP</th>
+        <th class="px-4 py-2 text-left">Country</th>
+        <th class="px-4 py-2 text-left">City</th>
+        <th class="px-4 py-2 text-right">Hits</th>
+        <th class="px-4 py-2 text-right">Err%</th>
+        <th class="px-4 py-2 text-right">Top Router</th>
+        <th class="px-4 py-2 text-right">Verdict</th>
+      </tr></thead>
+      <tbody>${r.TopIPs.map(ip => `
+        <tr class="border-b border-gray-800/50 hover:bg-gray-800/30">
+          <td class="px-4 py-2 font-mono text-white">${esc(ip.IP)}</td>
+          <td class="px-4 py-2 text-gray-300">${esc(ip.CountryName || ip.CountryCode || '--')}</td>
+          <td class="px-4 py-2 text-gray-400">${esc(ip.City || '')}</td>
+          <td class="px-4 py-2 text-right text-gray-300">${ip.Total}</td>
+          <td class="px-4 py-2 text-right ${ip.ErrorRate > 0.5 ? 'text-red-400' : 'text-gray-400'}">${(ip.ErrorRate * 100).toFixed(1)}%</td>
+          <td class="px-4 py-2 text-right text-gray-500 truncate max-w-xs" title="${esc(ip.TopRouter || '')}">${esc((ip.TopRouter || '').replace('@', '@\u200b'))}</td>
+          <td class="px-4 py-2 text-right font-semibold ${classColor(ip.Classification)}">${esc(ip.Classification || 'UNKNOWN')}</td>
+        </tr>`).join('')}
+      </tbody></table>`;
+  }
+
+  // Hostile Clusters
+  if (r.HostileClusters && r.HostileClusters.length) {
+    document.getElementById('intel-clusters-section').classList.remove('hidden');
+    document.getElementById('intel-clusters').innerHTML = r.HostileClusters.map((c, i) => `
+      <div class="rounded-lg border border-red-900/50 bg-red-950/20 px-4 py-3">
+        <p class="text-xs font-semibold text-red-400 mb-1">Cluster ${i + 1}</p>
+        <p class="text-sm text-gray-300">${esc(c.Description)}</p>
+        <p class="text-xs text-gray-500 mt-1">Target: <span class="text-amber-400 font-mono">${esc(c.TargetPattern)}</span></p>
+        <p class="text-xs text-gray-500 mt-1">IPs: ${(c.IPs || []).map(ip => `<span class="font-mono text-gray-300">${esc(ip)}</span>`).join(', ')}</p>
+      </div>`).join('');
+  }
+
+  // Attacker Nations
+  if (r.AttackerNations && r.AttackerNations.length) {
+    document.getElementById('intel-nations-section').classList.remove('hidden');
+    const threatColor = t => ({ HIGH: 'text-red-400', MEDIUM: 'text-amber-400', LOW: 'text-emerald-400' }[t] || 'text-gray-500');
+    document.getElementById('intel-nations-body').innerHTML = r.AttackerNations.map(n => `
+      <tr class="border-b border-gray-800/50 hover:bg-gray-800/30">
+        <td class="px-4 py-2 text-gray-300">${esc(n.CountryName || n.CountryCode)}</td>
+        <td class="px-4 py-2 text-right text-gray-300">${n.IPCount}</td>
+        <td class="px-4 py-2 text-right font-semibold ${threatColor(n.ThreatLevel)}">${esc(n.ThreatLevel)}</td>
+      </tr>`).join('');
+  }
 }
 
 // ── Drift alerts banner ──────────────────────────────────────────────────
@@ -943,7 +1104,7 @@ function renderShieldList(ips, activity) {
             ${label ? `<span class="text-[10px] px-2 py-0.5 rounded uppercase tracking-wide ${labelColor}">${esc(label)}</span>` : ''}
             <span class="text-xs text-gray-600">${total} hits/30m</span>
             ${spark}
-            <button onclick="unblockIP(${JSON.stringify(ip)}, this)"
+            <button onclick="unblockIP('${esc(ip)}', this)"
               class="text-xs px-3 py-1 rounded bg-gray-800 hover:bg-emerald-900 text-gray-400 hover:text-emerald-300 transition">
               Unblock
             </button>
