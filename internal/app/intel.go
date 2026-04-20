@@ -111,7 +111,7 @@ func (s *ThreatIntelService) AnalyzeAsync() {
 			s.mu.Unlock()
 		}()
 		if err := s.analyze(); err != nil {
-			slog.Warn("threat intel analysis failed", "err", err)
+			slog.Info("threat intel analysis skipped", "reason", err)
 		}
 	}()
 }

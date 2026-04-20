@@ -45,8 +45,9 @@ services:
       JANUS_SHIELD_PATH: ${JANUS_SHIELD_PATH:-/rules/blocklist.yaml}
       # AI severity threshold (1-10) for automatic IP blocking. Default: 10.
       JANUS_AUTO_BLOCK_MIN: ${JANUS_AUTO_BLOCK_MIN:-10}
-      # Path to Traefik's JSON access log (must be mounted from a shared volume).
-      JANUS_ACCESS_LOG_PATH: ${JANUS_ACCESS_LOG_PATH:-/logs/access.log}
+      # Path to Traefik's JSON access log inside the Janus container.
+      # Must match the mount point of TRAEFIK_LOG_DIR below.
+      JANUS_ACCESS_LOG_PATH: ${JANUS_ACCESS_LOG_PATH:-/traefik-logs/access.log}
       # Path to MaxMind GeoLite2-City.mmdb for IP geo-enrichment (optional).
       JANUS_GEOIP_DB_PATH: ${JANUS_GEOIP_DB_PATH:-/app/data/GeoLite2-City.mmdb}
     volumes:
@@ -55,6 +56,11 @@ services:
       - /opt/janus/data:/app/data
       - /opt/traefik/rules:/rules
       - /opt/GeoIP/data:/app/GeoIP
+      # Mount the same host directory that Traefik writes its access log to.
+      # In Traefik: volumes: - /var/log/traefik:/var/log
+      #             command:  - --accesslog.filePath=/var/log/access.log
+      #             IMPORTANT: remove --accessLog.filters.statusCodes to log all requests
+      - ${TRAEFIK_LOG_DIR:-/var/log/traefik}:/traefik-logs:ro
 
     ports:
       - "${JANUS_PORT:-9090}:${JANUS_PORT:-9090}"

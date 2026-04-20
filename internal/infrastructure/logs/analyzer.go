@@ -132,7 +132,9 @@ func (a *TrafficAnalyzer) UniqueIPCount() int {
 func (a *TrafficAnalyzer) poll() {
 	f, err := os.Open(a.path)
 	if err != nil {
-		if !os.IsNotExist(err) {
+		if os.IsNotExist(err) {
+			slog.Debug("traffic analyzer: access log not found — configure Traefik --accesslog.filepath and share the volume", "path", a.path)
+		} else {
 			slog.Warn("traffic analyzer: open", "err", err)
 		}
 		return
