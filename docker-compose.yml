@@ -31,10 +31,22 @@ services:
       JANUS_KNOWN_MIDDLEWARES: ${JANUS_KNOWN_MIDDLEWARES:-traefik-auth,authentik,crowdsec}
       # Path inside the container where AI audit traces are written.
       JANUS_AI_TRACE_PATH: ${JANUS_AI_TRACE_PATH:-/logs/ai_audit_trace.json}
-    ports:
-      - "${JANUS_PORT:-9090}:${JANUS_PORT:-9090}"
+      # Audit history for trend analysis.
+      JANUS_HISTORY_PATH: ${JANUS_HISTORY_PATH:-/logs/audit_history.json}
+      # Telegram alerts (leave TELEGRAM_BOT_TOKEN empty to disable).
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      TELEGRAM_SEVERITY_THRESHOLD: ${TELEGRAM_SEVERITY_THRESHOLD:-8}
+      # Path to user-defined security policies JSON file.
+      JANUS_POLICIES_PATH: ${JANUS_POLICIES_PATH:-/configs/policies.json}
+      # SQLite database path. Set to empty string to use JSON fallback.
+      JANUS_DB_PATH: ${JANUS_DB_PATH:-/app/data/janus.db}
     volumes:
       - /opt/janus/logs:/logs
+      - /opt/janus/configs:/configs
+      - /opt/janus/data:/app/data
+    ports:
+      - "${JANUS_PORT:-9090}:${JANUS_PORT:-9090}"
     networks:
       - proxy-network
       - ai-network

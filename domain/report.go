@@ -5,14 +5,17 @@ import "time"
 // RouterAudit holds the security audit result for a single router.
 // It is a component of the AuditReport aggregate — it has no identity of its own.
 type RouterAudit struct {
-	Router      Router
-	Issues      []SecurityIssue
-	Score       int    // 0 (critical) – 100 (clean)
-	AIReasoning string // per-router insight from the AI analyst; empty until first AI run
+	Router           Router
+	Issues           []SecurityIssue
+	PolicyViolations []PolicyViolation // violations of user-defined policies
+	Score            int               // 0 (critical) – 100 (clean)
+	AIReasoning      string            // per-router insight from the AI analyst; empty until first AI run
 }
 
-// IsClean returns true when no security issues were detected.
-func (ra RouterAudit) IsClean() bool { return len(ra.Issues) == 0 }
+// IsClean returns true when no security issues and no policy violations were detected.
+func (ra RouterAudit) IsClean() bool {
+	return len(ra.Issues) == 0 && len(ra.PolicyViolations) == 0
+}
 
 // PulseAlert represents a service whose combined 4xx+5xx error rate
 // exceeds the configured alert threshold.
@@ -32,6 +35,7 @@ type AuditReport struct {
 	TraefikOK    bool
 	RouterAudits []RouterAudit
 	PulseAlerts  []PulseAlert
+	DriftAlerts  []DriftAlert  // set when security posture regressed since last audit
 	OverallScore int
 	AIInsights   *AIInsights
 	Error        string

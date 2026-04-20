@@ -62,11 +62,31 @@
   </div>
 </header>
 
+<!-- ── Tab bar ────────────────────────────────────────────────────────── -->
+<nav class="border-b border-gray-800 px-6">
+  <div class="max-w-7xl mx-auto flex gap-1">
+    <button id="tab-dashboard" onclick="switchTab('dashboard')"
+      class="tab-btn px-4 py-2 text-xs font-semibold border-b-2 border-indigo-500 text-indigo-400 -mb-px transition">
+      Dashboard
+    </button>
+    <button id="tab-policies" onclick="switchTab('policies')"
+      class="tab-btn px-4 py-2 text-xs font-semibold border-b-2 border-transparent text-gray-500 hover:text-gray-300 -mb-px transition">
+      Policies
+    </button>
+  </div>
+</nav>
+
 <!-- ── Main ───────────────────────────────────────────────────────────── -->
 <main class="max-w-7xl mx-auto px-6 py-8 space-y-10">
 
   <!-- Error banner (hidden by default) -->
   <div id="error-banner" class="hidden rounded-lg bg-red-950 border border-red-800 px-4 py-3 text-red-300 text-sm"></div>
+
+  <!-- ── Drift alerts ────────────────────────────────────────────────── -->
+  <div id="drift-banner" class="hidden"></div>
+
+<!-- ════════════════ DASHBOARD TAB ═══════════════════════════════════════ -->
+<div id="panel-dashboard">
 
   <!-- ── Overview strip ──────────────────────────────────────────────── -->
   <section id="overview" class="grid grid-cols-2 sm:grid-cols-4 gap-4"></section>
@@ -137,6 +157,62 @@
     </div>
   </section>
 
+  <!-- ── History & Trend ───────────────────────────────────────────────── -->
+  <section id="history-section">
+    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-4">
+      Intelligence History
+      <span class="ml-2 text-gray-700 normal-case font-normal">— audit score trend</span>
+    </h2>
+    <div id="history-container" class="space-y-3">
+      <p class="text-gray-600 text-sm">Loading…</p>
+    </div>
+  </section>
+
+</div><!-- end #panel-dashboard -->
+
+<!-- ════════════════ POLICIES TAB ════════════════════════════════════════ -->
+<div id="panel-policies" class="hidden space-y-6">
+
+  <!-- Executive Summary -->
+  <section>
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest">
+        AI Executive Summary
+        <span class="ml-2 text-gray-700 normal-case font-normal">— strategic analysis over audit history</span>
+      </h2>
+      <button onclick="fetchExecutiveSummary()"
+        class="text-xs px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 transition text-white">
+        ⟳ Ask Janus-AI
+      </button>
+    </div>
+    <div id="exec-summary-container">
+      <div class="rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 text-sm text-gray-500">
+        Click "Ask Janus-AI" to generate an executive summary of your audit history.
+      </div>
+    </div>
+  </section>
+
+  <!-- Policy Definitions -->
+  <section>
+    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-4">Active Policies</h2>
+    <div id="policy-defs-container" class="space-y-2">
+      <p class="text-gray-600 text-sm">Loading…</p>
+    </div>
+  </section>
+
+  <!-- Compliance Status -->
+  <section>
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest">Compliance Status</h2>
+      <span id="compliance-summary" class="text-xs text-gray-600"></span>
+    </div>
+    <div id="compliance-container" class="space-y-2">
+      <p class="text-gray-600 text-sm">Loading…</p>
+    </div>
+  </section>
+
+</div><!-- end #panel-policies -->
+
 </main>
 
 <footer class="mt-16 border-t border-gray-900 text-center py-4 text-xs text-gray-700">
@@ -152,16 +228,20 @@ let timer;
 async function refresh() {
   resetCountdown();
   try {
-    const res = await fetch('/api/status');
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    render(data);
+    const [statusRes, historyRes] = await Promise.all([
+      fetch('/api/status'),
+      fetch('/api/v1/history'),
+    ]);
+    if (!statusRes.ok) throw new Error(`HTTP ${statusRes.status}`);
+    const data    = await statusRes.json();
+    const history = historyRes.ok ? await historyRes.json() : [];
+    render(data, history);
   } catch (e) {
     showError('Failed to reach Janus API: ' + e.message);
   }
 }
 
-function render(d) {
+function render(d, history) {
   hideError();
   renderStatus(d.traefik_ok);
   renderOverview(d.overview);
@@ -169,6 +249,9 @@ function render(d) {
   renderFlags(d.red_flags ?? []);
   renderPulse(d.pulse_alerts ?? [], d.metrics_enabled);
   renderAI(d.ai_insights, d.ai_enabled);
+  renderHistory(history ?? []);
+  renderDriftBanner(d.drift_alerts ?? []);
+  renderPolicies(d.policies ?? [], d.red_flags ?? []);
   if (d.error) showError(d.error);
 }
 
@@ -271,7 +354,13 @@ function renderFlags(flags) {
             <p class="text-sm font-semibold text-white truncate">${esc(f.router_name)}</p>
             <p class="text-xs text-gray-500 mt-0.5 truncate">${esc(f.rule)}</p>
           </div>
-          <span class="shrink-0 text-xs font-bold px-2 py-0.5 rounded ${scoreBadge(f.score)}">${f.score}/100</span>
+          <div class="flex items-center gap-2 shrink-0">
+            ${f.remediation_snippet ? `<button onclick="copyFix(this, ${JSON.stringify(f.remediation_snippet)})"
+              class="text-[10px] px-2 py-0.5 rounded bg-indigo-900 hover:bg-indigo-700 text-indigo-300 transition">
+              📋 Copy Fix
+            </button>` : ''}
+            <span class="text-xs font-bold px-2 py-0.5 rounded ${scoreBadge(f.score)}">${f.score}/100</span>
+          </div>
         </div>
         <ul class="mt-2 space-y-1">${routerChecklist(f)}</ul>
       </div>`).join(''));
@@ -487,7 +576,13 @@ function renderAI(ai, aiEnabled) {
                 </details>` : ''}
               ${ri.remediation?.length ? `
                 <div class="mt-1.5">
-                  <p class="text-[10px] text-gray-600 uppercase tracking-wide mb-0.5">Remediation</p>
+                  <div class="flex items-center justify-between mb-0.5">
+                    <p class="text-[10px] text-gray-600 uppercase tracking-wide">Remediation</p>
+                    <button onclick="copyFix(this, ${JSON.stringify('labels:\n' + ri.remediation.map(r => '  - "' + r.replace(/"/g, '') + '"').join('\n'))})"
+                      class="text-[10px] px-2 py-0.5 rounded bg-indigo-900 hover:bg-indigo-700 text-indigo-300 transition">
+                      📋 Copy Fix
+                    </button>
+                  </div>
                   <ul class="space-y-0.5">
                     ${ri.remediation.map(r => `<li class="text-xs text-indigo-300 font-mono">${esc(r)}</li>`).join('')}
                   </ul>
@@ -505,6 +600,226 @@ function fmtTime(iso) {
   try {
     return new Date(iso).toLocaleTimeString();
   } catch { return iso; }
+}
+
+// ── History & Trend ──────────────────────────────────────────────────────
+function renderHistory(history) {
+  const container = document.getElementById('history-container');
+  if (!Array.isArray(history) || history.length === 0) {
+    container.innerHTML = `<div class="rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 text-sm text-gray-500">
+      No history yet — data accumulates after each AI audit cycle.
+    </div>`;
+    return;
+  }
+
+  // Show last 20 entries, newest first.
+  const entries = [...history].reverse().slice(0, 20);
+
+  // Mini sparkline: render score bars
+  const bars = history.slice(-30).map(h => {
+    const col = h.overall_score >= 70 ? '#10b981' : h.overall_score >= 40 ? '#fbbf24' : '#ef4444';
+    const ht  = Math.max(4, Math.round((h.overall_score / 100) * 40));
+    return `<div style="width:6px;height:${ht}px;background:${col};border-radius:2px;align-self:flex-end" title="Score ${h.overall_score} · ${fmtDate(h.timestamp)}"></div>`;
+  }).join('');
+
+  const latest = history[history.length - 1];
+  const trend  = history.length >= 2
+    ? history[history.length-1].overall_score - history[history.length-2].overall_score
+    : 0;
+  const trendEl = trend > 0
+    ? `<span class="text-emerald-400">▲ +${trend}</span>`
+    : trend < 0
+    ? `<span class="text-red-400">▼ ${trend}</span>`
+    : `<span class="text-gray-500">━ 0</span>`;
+
+  container.innerHTML = `
+    <div class="rounded-lg border border-gray-800 bg-gray-900 px-4 py-3">
+      <div class="flex items-end justify-between gap-4 mb-3">
+        <div>
+          <p class="text-xs text-gray-500 mb-0.5">${history.length} audits recorded · latest score: <strong class="${scoreTextClass(latest?.overall_score)}">${latest?.overall_score ?? '—'}/100</strong> ${trendEl}</p>
+          <p class="text-[10px] text-gray-600">Last run: ${fmtDate(latest?.timestamp)}</p>
+        </div>
+        <div class="flex items-end gap-0.5 h-10">${bars}</div>
+      </div>
+      <table class="w-full text-xs border-collapse">
+        <thead>
+          <tr class="text-gray-600 text-[10px] uppercase tracking-wide border-b border-gray-800">
+            <th class="text-left pb-1">Time</th>
+            <th class="text-right pb-1">Score</th>
+            <th class="text-right pb-1">AI Sev</th>
+            <th class="text-right pb-1">Red Flags</th>
+            <th class="text-right pb-1">Shadow APIs</th>
+            <th class="text-right pb-1">Tokens</th>
+            <th class="text-right pb-1">Latency</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${entries.map(h => `
+            <tr class="border-b border-gray-900 hover:bg-gray-800/40">
+              <td class="py-1 text-gray-500">${fmtDate(h.timestamp)}</td>
+              <td class="py-1 text-right font-bold ${scoreTextClass(h.overall_score)}">${h.overall_score}</td>
+              <td class="py-1 text-right ${h.severity >= 7 ? 'text-red-400' : h.severity >= 4 ? 'text-amber-400' : 'text-emerald-400'}">${h.fallback ? '—' : h.severity}</td>
+              <td class="py-1 text-right ${h.red_flags > 0 ? 'text-amber-400' : 'text-gray-500'}">${h.red_flags}</td>
+              <td class="py-1 text-right ${h.shadow_apis > 0 ? 'text-red-400' : 'text-gray-500'}">${h.shadow_apis}</td>
+              <td class="py-1 text-right text-gray-500">${h.tokens_used > 0 ? h.tokens_used.toLocaleString() : '—'}</td>
+              <td class="py-1 text-right text-gray-500">${h.latency_ms > 0 ? h.latency_ms + 'ms' : '—'}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  try { return new Date(iso).toLocaleString(); } catch { return iso; }
+}
+
+function scoreTextClass(s) {
+  if (s >= 70) return 'text-emerald-400';
+  if (s >= 40) return 'text-amber-400';
+  return 'text-red-400';
+}
+
+// ── Copy Fix ──────────────────────────────────────────────────────────────
+function copyFix(btn, snippet) {
+  navigator.clipboard.writeText(snippet).then(() => {
+    const orig = btn.textContent;
+    btn.textContent = '✓ Copied!';
+    btn.classList.replace('bg-indigo-900', 'bg-emerald-900');
+    btn.classList.replace('text-indigo-300', 'text-emerald-300');
+    setTimeout(() => {
+      btn.textContent = orig;
+      btn.classList.replace('bg-emerald-900', 'bg-indigo-900');
+      btn.classList.replace('text-emerald-300', 'text-indigo-300');
+    }, 2000);
+  }).catch(() => {
+    btn.textContent = '✗ Failed';
+    setTimeout(() => { btn.textContent = '📋 Copy Fix'; }, 2000);
+  });
+}
+
+// ── Tab switching ────────────────────────────────────────────────────────
+function switchTab(name) {
+  ['dashboard', 'policies'].forEach(t => {
+    document.getElementById('panel-' + t).classList.toggle('hidden', t !== name);
+    const btn = document.getElementById('tab-' + t);
+    if (t === name) {
+      btn.classList.replace('border-transparent', 'border-indigo-500');
+      btn.classList.replace('text-gray-500', 'text-indigo-400');
+    } else {
+      btn.classList.replace('border-indigo-500', 'border-transparent');
+      btn.classList.replace('text-indigo-400', 'text-gray-500');
+    }
+  });
+}
+
+// ── Drift alerts banner ──────────────────────────────────────────────────
+function renderDriftBanner(drifts) {
+  const el = document.getElementById('drift-banner');
+  if (!drifts.length) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+  el.classList.remove('hidden');
+  el.innerHTML = drifts.map(d => `
+    <div class="rounded-lg border border-orange-700 bg-orange-950/40 px-4 py-3 text-sm text-orange-300 mb-2">
+      ⚠️ <strong>CONFIGURATION DRIFT</strong> — <span class="font-semibold">${esc(d.router_name)}</span>
+      lost: ${d.lost_checks.map(c => `<code class="text-orange-200 text-xs">${esc(c)}</code>`).join(', ')}
+      <span class="text-orange-500 ml-2">Score: ${d.old_score} → ${d.new_score}</span>
+    </div>`).join('');
+}
+
+// ── Policies tab ─────────────────────────────────────────────────────────
+function renderPolicies(policies, routers) {
+  // Policy definitions
+  const defsEl = document.getElementById('policy-defs-container');
+  if (!policies.length) {
+    defsEl.innerHTML = `<div class="rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 text-sm text-gray-500">
+      No policies loaded. Mount <code class="text-indigo-400">/configs/policies.json</code> or set <code class="text-indigo-400">JANUS_POLICIES_PATH</code>.
+    </div>`;
+  } else {
+    defsEl.innerHTML = policies.map(p => `
+      <div class="rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 flex items-start justify-between gap-4">
+        <div>
+          <p class="text-sm font-semibold text-white">${esc(p.name)}</p>
+          <p class="text-xs text-gray-500 mt-0.5">${esc(p.description)}</p>
+        </div>
+        <div class="shrink-0 text-right">
+          <p class="text-xs text-gray-600 mb-1">pattern: <code class="text-indigo-400">${esc(p.pattern)}</code></p>
+          <div class="flex gap-1 flex-wrap justify-end">
+            ${(p.required ?? []).map(r => `<span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-amber-400 uppercase">${esc(r)}</span>`).join('')}
+          </div>
+        </div>
+      </div>`).join('');
+  }
+
+  // Compliance status
+  const compEl   = document.getElementById('compliance-container');
+  const summEl   = document.getElementById('compliance-summary');
+  const nonRedir = routers.filter(r => !r.is_redirect);
+  const violators = nonRedir.filter(r => r.policy_violations?.length);
+  const compliant = nonRedir.filter(r => !r.policy_violations?.length);
+
+  summEl.textContent = nonRedir.length
+    ? `${compliant.length} compliant · ${violators.length} non-compliant`
+    : '';
+
+  if (!nonRedir.length) {
+    compEl.innerHTML = `<div class="rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 text-sm text-gray-500">No routers to evaluate.</div>`;
+    return;
+  }
+
+  const parts = [];
+  if (violators.length) {
+    parts.push(violators.map(r => `
+      <div class="rounded-lg border border-red-900 bg-gray-900 px-4 py-3">
+        <div class="flex items-start justify-between gap-2">
+          <p class="text-sm font-semibold text-white">${esc(r.router_name)}</p>
+          <span class="shrink-0 text-[10px] px-2 py-0.5 rounded bg-red-900 text-red-300 uppercase">Non-Compliant</span>
+        </div>
+        <ul class="mt-2 space-y-1">
+          ${r.policy_violations.map(v => `
+            <li class="text-xs text-red-300 flex gap-2">
+              <span class="shrink-0 text-red-600">✗</span>
+              <span>Policy <strong>${esc(v.policy_name)}</strong> — missing: ${v.missing.map(m => `<code class="text-amber-400">${esc(m)}</code>`).join(', ')}</span>
+            </li>`).join('')}
+        </ul>
+      </div>`).join(''));
+  }
+  if (compliant.length) {
+    parts.push(compliant.map(r => `
+      <div class="rounded-lg border border-emerald-900 bg-gray-900 px-4 py-2 flex items-center justify-between">
+        <p class="text-sm text-white">${esc(r.router_name)}</p>
+        <span class="text-[10px] px-2 py-0.5 rounded bg-emerald-900 text-emerald-300">✓ Compliant</span>
+      </div>`).join(''));
+  }
+  compEl.innerHTML = parts.join('');
+}
+
+// ── Executive Summary ─────────────────────────────────────────────────────
+async function fetchExecutiveSummary() {
+  const el  = document.getElementById('exec-summary-container');
+  const btn = event.target;
+  btn.textContent = '⟳ Thinking…';
+  btn.disabled = true;
+  el.innerHTML = `<div class="rounded-lg border border-indigo-900 bg-gray-900 px-4 py-3 text-sm text-indigo-400 animate-pulse">
+    Janus-AI is reviewing your audit history…
+  </div>`;
+  try {
+    const res = await fetch('/api/v1/ai/consult');
+    if (!res.ok) {
+      const body = await res.json();
+      throw new Error(body.error ?? `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    el.innerHTML = `
+      <div class="rounded-lg border border-indigo-900 bg-gray-900 px-4 py-4">
+        <p class="text-xs text-indigo-400 mb-2">Janus-AI · ${data.tokens_used ?? 0} tokens</p>
+        <p class="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap">${esc(data.summary)}</p>
+      </div>`;
+  } catch (e) {
+    el.innerHTML = `<div class="rounded-lg border border-red-900 bg-gray-900 px-4 py-3 text-sm text-red-400">⚠ ${esc(e.message)}</div>`;
+  } finally {
+    btn.textContent = '⟳ Ask Janus-AI';
+    btn.disabled = false;
+  }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────

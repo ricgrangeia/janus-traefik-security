@@ -4,14 +4,25 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/janus-project/janus/domain"
+	"github.com/janus-project/janus/internal/infrastructure/storage"
+	"github.com/janus-project/janus/internal/infrastructure/telegram"
 	traefikinfra "github.com/janus-project/janus/internal/infrastructure/traefik"
 	"github.com/janus-project/janus/internal/pulse"
 )
+
+// ThreatNotifier is a narrow interface so the worker is not coupled to the
+// concrete Telegram implementation.
+type ThreatNotifier interface {
+	Enabled() bool
+	SendThreatAlert(serviceName, classification, reasoning, fix string) error
+}
 
 // AIAuditWorker runs the AI enrichment pipeline on a ticker and stores the
 // latest AI-enriched AuditReport for the HTTP handler to read.
@@ -23,12 +34,17 @@ type AIAuditWorker struct {
 	interval  time.Duration
 	tracePath string
 
+	notifier          ThreatNotifier
+	store             storage.Store
+	threatSeverityMin int // alert when bot_scan AI severity >= this value
+
 	mu     sync.RWMutex
 	latest *domain.AIInsights // nil until first successful AI run
 }
 
-// NewAIAuditWorker creates a worker. interval is how often the AI audit runs.
-// tracePath is the file path where AI audit traces are written (empty = disabled).
+// NewAIAuditWorker creates a worker. tracePath is the JSONL trace file path
+// (empty = disabled). Call WithNotifier and WithStorage to opt into alerting
+// and persistence.
 func NewAIAuditWorker(
 	client *traefikinfra.Client,
 	auditor domain.Auditor,
@@ -38,13 +54,31 @@ func NewAIAuditWorker(
 	tracePath string,
 ) *AIAuditWorker {
 	return &AIAuditWorker{
-		client:    client,
-		auditor:   auditor,
-		analyst:   analyst,
-		threshold: threshold,
-		interval:  interval,
-		tracePath: tracePath,
+		client:            client,
+		auditor:           auditor,
+		analyst:           analyst,
+		threshold:         threshold,
+		interval:          interval,
+		tracePath:         tracePath,
+		threatSeverityMin: 8,
 	}
+}
+
+// WithNotifier attaches a Telegram notifier. severityMin is the minimum overall
+// AI severity (0-10) at which a bot_scan alert is sent.
+func (w *AIAuditWorker) WithNotifier(n *telegram.Notifier, severityMin int) *AIAuditWorker {
+	w.notifier = n
+	if severityMin > 0 {
+		w.threatSeverityMin = severityMin
+	}
+	return w
+}
+
+// WithStorage attaches a storage backend for audit persistence.
+// Accepts any Store — JSON Repository or SQLiteRepository both qualify.
+func (w *AIAuditWorker) WithStorage(s storage.Store) *AIAuditWorker {
+	w.store = s
+	return w
 }
 
 // LatestInsights returns the most recent AI insights, or nil if the AI audit
@@ -60,7 +94,6 @@ func (w *AIAuditWorker) LatestInsights() *domain.AIInsights {
 func (w *AIAuditWorker) Run(ctx context.Context) {
 	slog.Info("AI audit worker started", "interval", w.interval)
 
-	// Run once immediately, then on every tick.
 	w.runOnce()
 
 	ticker := time.NewTicker(w.interval)
@@ -109,7 +142,6 @@ func (w *AIAuditWorker) runOnce() {
 	if err != nil {
 		slog.Error("AI audit: analyst failed", "err", err,
 			"elapsed_ms", time.Since(start).Milliseconds())
-		// Analyst sets a Fallback AIInsights — store it so the UI shows the degraded state.
 		if enriched.AIInsights != nil {
 			w.mu.Lock()
 			w.latest = enriched.AIInsights
@@ -118,22 +150,127 @@ func (w *AIAuditWorker) runOnce() {
 		return
 	}
 
-	if enriched.AIInsights != nil {
-		ai := enriched.AIInsights
-		slog.Info("AI audit complete",
-			"overall_score", enriched.OverallScore,
-			"severity", ai.Severity,
-			"prompt_tokens", ai.PromptTokens,
-			"completion_tokens", ai.CompletionTokens,
-			"latency_ms", ai.LatencyMs,
-			"shadow_apis", len(ai.ShadowAPIs),
-			"aggressivity_alerts", len(ai.AggressivityAlerts),
-		)
+	if enriched.AIInsights == nil {
+		return
+	}
 
-		WriteAuditTrace(w.tracePath, enriched)
+	ai := enriched.AIInsights
+	slog.Info("AI audit complete",
+		"overall_score", enriched.OverallScore,
+		"severity", ai.Severity,
+		"prompt_tokens", ai.PromptTokens,
+		"completion_tokens", ai.CompletionTokens,
+		"latency_ms", ai.LatencyMs,
+		"shadow_apis", len(ai.ShadowAPIs),
+		"aggressivity_alerts", len(ai.AggressivityAlerts),
+	)
 
-		w.mu.Lock()
-		w.latest = ai
-		w.mu.Unlock()
+	WriteAuditTrace(w.tracePath, enriched)
+	w.saveHistory(enriched)
+	w.fireThreatAlerts(ai)
+
+	w.mu.Lock()
+	w.latest = ai
+	w.mu.Unlock()
+}
+
+// saveHistory persists a summary to the configured store.
+func (w *AIAuditWorker) saveHistory(report domain.AuditReport) {
+	if w.store == nil || report.AIInsights == nil {
+		return
+	}
+	ai := report.AIInsights
+	redFlags := 0
+	for _, ra := range report.RouterAudits {
+		if !ra.Router.IsRedirect && !ra.IsClean() {
+			redFlags++
+		}
+	}
+	summary := storage.AuditSummary{
+		Timestamp:    ai.GeneratedAt,
+		OverallScore: report.OverallScore,
+		Severity:     ai.Severity,
+		RedFlags:     redFlags,
+		ShadowAPIs:   len(ai.ShadowAPIs),
+		TokensUsed:   ai.TokensUsed,
+		LatencyMs:    ai.LatencyMs,
+		Fallback:     ai.Fallback,
+	}
+
+	// Use the richer SQLite path when available (stores router-level detail).
+	if rich, ok := w.store.(storage.RichStore); ok {
+		_, err := rich.SaveAuditWithRouters(summary, ToRouterResults(report))
+		if err != nil {
+			slog.Warn("SQLite: save audit failed", "err", err)
+		}
+		// Security Decline alert: current score < avg of previous 3.
+		if w.notifier != nil && w.notifier.Enabled() && CheckSecurityDecline(rich, 3) {
+			_ = w.notifier.SendThreatAlert(
+				"global",
+				"SECURITY_DECLINE",
+				fmt.Sprintf("Current score %d is below average of last 3 audits", report.OverallScore),
+				"Review recently changed router configurations",
+			)
+		}
+	} else {
+		w.store.Save(summary)
+	}
+}
+
+// fireDriftAlerts sends Telegram alerts for configuration drift events.
+func (w *AIAuditWorker) fireDriftAlerts(alerts []domain.DriftAlert) {
+	if w.notifier == nil || !w.notifier.Enabled() || len(alerts) == 0 {
+		return
+	}
+	for _, alert := range alerts {
+		lost := strings.Join(alert.LostChecks, ", ")
+		msg := fmt.Sprintf("⚠️ CONFIGURATION DRIFT DETECTED\nRouter: %s\nLost: %s\nScore: %d → %d",
+			alert.RouterName, lost, alert.OldScore, alert.NewScore)
+		if err := w.notifier.SendThreatAlert(alert.RouterName, "DRIFT", lost,
+			fmt.Sprintf("Score dropped from %d to %d — restore missing middlewares", alert.OldScore, alert.NewScore),
+		); err != nil {
+			slog.Warn("Telegram drift alert failed", "router", alert.RouterName, "err", err)
+		} else {
+			slog.Info("Telegram drift alert sent", "router", alert.RouterName, "msg", msg)
+		}
+	}
+}
+
+// fireThreatAlerts sends Telegram alerts for bot_scan aggressivity alerts that
+// meet the severity threshold.
+func (w *AIAuditWorker) fireThreatAlerts(ai *domain.AIInsights) {
+	if w.notifier == nil || !w.notifier.Enabled() {
+		return
+	}
+	if ai.Severity < w.threatSeverityMin {
+		return
+	}
+
+	for _, alert := range ai.AggressivityAlerts {
+		if !strings.EqualFold(alert.Assessment, "bot_scan") {
+			continue
+		}
+
+		fix := "Apply IP Allowlist and rate limiting immediately."
+		// Try to surface a specific remediation from the router insights.
+		for name, ri := range ai.RouterInsights {
+			if strings.Contains(strings.ToLower(name), strings.ToLower(strings.SplitN(alert.ServiceName, "@", 2)[0])) {
+				if len(ri.Remediation) > 0 {
+					fix = strings.Join(ri.Remediation, "; ")
+				}
+				break
+			}
+		}
+
+		if err := w.notifier.SendThreatAlert(
+			alert.ServiceName,
+			"BOT_SCAN",
+			alert.Reasoning,
+			fix,
+		); err != nil {
+			slog.Warn("Telegram alert failed", "service", alert.ServiceName, "err", err)
+		} else {
+			slog.Info("Telegram threat alert sent", "service", alert.ServiceName, "severity", ai.Severity)
+		}
 	}
 }
