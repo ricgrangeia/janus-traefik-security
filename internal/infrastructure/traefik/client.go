@@ -3,6 +3,7 @@ package traefik
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -66,18 +67,14 @@ func (c *Client) FetchMetrics() (string, error) {
 	}
 	defer resp.Body.Close()
 
-	var sb strings.Builder
-	buf := make([]byte, 32*1024)
-	for {
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			sb.Write(buf[:n])
-		}
-		if readErr != nil {
-			break
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", domain.InfrastructureError{
+			Sentinel: domain.ErrTraefikBadData,
+			Cause:    fmt.Errorf("read /metrics: %w", err),
 		}
 	}
-	return sb.String(), nil
+	return string(body), nil
 }
 
 // fetchDTO is a generic helper that GETs a Traefik API endpoint and decodes JSON.

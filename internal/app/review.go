@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -157,7 +158,7 @@ func verdictLabel(v string) string {
 	case "B":
 		return "COOLING DOWN"
 	case "C":
-		return "COOLING DOWN"
+		return "INCONCLUSIVE"
 	default:
 		return "REVIEWING"
 	}
@@ -178,7 +179,6 @@ func buildReviewContext(ip string, hits []logs.HitRecord, windowMins int) string
 	}
 	rate := float64(len(hits)) / float64(windowMins)
 
-	// Top 5 paths by hit count (simple insertion sort).
 	type kv struct {
 		path  string
 		count int
@@ -187,13 +187,9 @@ func buildReviewContext(ip string, hits []logs.HitRecord, windowMins int) string
 	for p, c := range uniquePaths {
 		sorted = append(sorted, kv{p, c})
 	}
-	for i := 0; i < len(sorted); i++ {
-		for j := i + 1; j < len(sorted); j++ {
-			if sorted[j].count > sorted[i].count {
-				sorted[i], sorted[j] = sorted[j], sorted[i]
-			}
-		}
-	}
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].count > sorted[j].count
+	})
 	if len(sorted) > 5 {
 		sorted = sorted[:5]
 	}

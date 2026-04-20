@@ -87,6 +87,7 @@ func (r *SQLiteRepository) History() []AuditSummary {
 		var fallback int
 		if err := rows.Scan(&ts, &s.OverallScore, &s.Severity, &s.RedFlags,
 			&s.ShadowAPIs, &s.TokensUsed, &s.LatencyMs, &fallback); err != nil {
+			slog.Warn("SQLite: history row scan failed", "err", err)
 			continue
 		}
 		s.Timestamp, _ = time.Parse(time.RFC3339, ts)
@@ -171,6 +172,7 @@ func (r *SQLiteRepository) GetSecurityTrend(days int) []AuditSummary {
 		var fallback int
 		if err := rows.Scan(&ts, &s.OverallScore, &s.Severity, &s.RedFlags,
 			&s.ShadowAPIs, &s.TokensUsed, &s.LatencyMs, &fallback); err != nil {
+			slog.Warn("SQLite: trend row scan failed", "err", err)
 			continue
 		}
 		s.Timestamp, _ = time.Parse(time.RFC3339, ts)

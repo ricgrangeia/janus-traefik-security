@@ -67,7 +67,12 @@ func (s *ShieldService) WithImmunity(fn func(string) bool) *ShieldService {
 }
 
 // IsBlocked returns true if ip is currently blocked. O(1). Used by /auth.
+// Immunity is checked first — an IP that becomes immune after being blocked
+// is treated as unblocked on the hot path, preventing accidental lockouts.
 func (s *ShieldService) IsBlocked(ip string) bool {
+	if s.immunity != nil && s.immunity(ip) {
+		return false
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.blockedSet[ip]

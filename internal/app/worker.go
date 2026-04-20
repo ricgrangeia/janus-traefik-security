@@ -232,25 +232,6 @@ func (w *AIAuditWorker) saveHistory(report domain.AuditReport) {
 	}
 }
 
-// fireDriftAlerts sends Telegram alerts for configuration drift events.
-func (w *AIAuditWorker) fireDriftAlerts(alerts []domain.DriftAlert) {
-	if w.notifier == nil || !w.notifier.Enabled() || len(alerts) == 0 {
-		return
-	}
-	for _, alert := range alerts {
-		lost := strings.Join(alert.LostChecks, ", ")
-		msg := fmt.Sprintf("⚠️ CONFIGURATION DRIFT DETECTED\nRouter: %s\nLost: %s\nScore: %d → %d",
-			alert.RouterName, lost, alert.OldScore, alert.NewScore)
-		if err := w.notifier.SendThreatAlert(alert.RouterName, "DRIFT", lost,
-			fmt.Sprintf("Score dropped from %d to %d — restore missing middlewares", alert.OldScore, alert.NewScore),
-		); err != nil {
-			slog.Warn("Telegram drift alert failed", "router", alert.RouterName, "err", err)
-		} else {
-			slog.Info("Telegram drift alert sent", "router", alert.RouterName, "msg", msg)
-		}
-	}
-}
-
 // fireThreatAlerts sends Telegram alerts for bot_scan aggressivity alerts that
 // meet the severity threshold.
 func (w *AIAuditWorker) fireThreatAlerts(ai *domain.AIInsights) {
