@@ -89,8 +89,8 @@ func (w *BanReviewWorker) GetVerdict(ip string) (IPVerdict, bool) {
 }
 
 func (w *BanReviewWorker) reviewAll() {
-	ips, err := w.shield.ListBlocked()
-	if err != nil || len(ips) == 0 {
+	ips := w.shield.ListBlocked()
+	if len(ips) == 0 {
 		return
 	}
 	slog.Info("ban review: reviewing banned IPs", "count", len(ips))

@@ -41,8 +41,12 @@ services:
       JANUS_POLICIES_PATH: ${JANUS_POLICIES_PATH:-/configs/policies.json}
       # SQLite database path. Set to empty string to use JSON fallback.
       JANUS_DB_PATH: ${JANUS_DB_PATH:-/app/data/janus.db}
-      # Shield: path to the Traefik dynamic-config YAML managed by Janus.
-      JANUS_SHIELD_PATH: ${JANUS_SHIELD_PATH:-/rules/blocklist.yaml}
+      # Shield: Traefik dynamic-config YAML written by Janus at startup (forwardAuth middleware).
+      JANUS_SHIELD_PATH: ${JANUS_SHIELD_PATH:-/rules/janus-middleware.yaml}
+      # Shield state: JSON file where Janus persists its blocked IP list across restarts.
+      JANUS_SHIELD_STATE_PATH: ${JANUS_SHIELD_STATE_PATH:-/app/data/shield_state.json}
+      # Internal URL Traefik uses to reach Janus's /auth endpoint (forwardAuth address).
+      JANUS_INTERNAL_URL: ${JANUS_INTERNAL_URL:-http://janus:9090}
       # AI severity threshold (1-10) for automatic IP blocking. Default: 10.
       JANUS_AUTO_BLOCK_MIN: ${JANUS_AUTO_BLOCK_MIN:-10}
       # Path to Traefik's JSON access log inside the Janus container.

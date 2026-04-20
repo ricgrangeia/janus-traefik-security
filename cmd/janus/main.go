@@ -7,9 +7,11 @@ import (
 	"io/fs"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,7 +48,9 @@ type config struct {
 	ThreatSeverityMin int
 	PoliciesPath      string
 	DBPath            string
-	ShieldPath        string
+	ShieldPath        string // path to Traefik dynamic-config YAML (forwardAuth middleware)
+	ShieldStatePath   string // path to JSON state file (blocked IPs, admin list)
+	JanusInternalURL  string // URL Traefik uses to reach Janus /auth, e.g. http://janus:9090
 	AutoBlockMin      int    // severity threshold for automatic IP blocking (default 10)
 	AccessLogPath     string // path to Traefik's JSON access log
 	GeoIPPath         string // path to GeoLite2-City.mmdb (optional)
@@ -215,7 +219,7 @@ func main() {
 	whitelist := app.NewWhitelistService(cfg.WhitelistPath)
 
 	// ── Shield service (always active, AI worker uses it for auto-block) ──
-	shield := firewall.NewShieldService(cfg.ShieldPath).
+	shield := firewall.NewShieldService(cfg.ShieldPath, cfg.ShieldStatePath, cfg.JanusInternalURL).
 		WithImmunity(whitelist.Contains)
 
 	// ── Optional AI worker + consult service ─────────────────────────────
@@ -293,6 +297,17 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 
+	// GET /auth — Traefik forwardAuth target. Returns 200 (pass) or 403 (block).
+	// Traefik forwards X-Forwarded-For with the real client IP on every request.
+	mux.HandleFunc("GET /auth", func(w http.ResponseWriter, r *http.Request) {
+		ip := extractForwardedIP(r)
+		if ip != "" && shield.IsBlocked(ip) {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -369,12 +384,7 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 
-		ips, err := shield.ListBlocked()
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-			return
-		}
+		ips := shield.ListBlocked()
 		if ips == nil {
 			ips = []string{}
 		}
@@ -411,7 +421,7 @@ func main() {
 			activity[ip] = entry
 		}
 
-		adminList, _ := shield.GetAdminWhitelist()
+		adminList := shield.GetAdminWhitelist()
 		if adminList == nil {
 			adminList = []string{}
 		}
@@ -470,12 +480,7 @@ func main() {
 	// GET /api/v1/shield/admin-whitelist — returns the janus-admin-whitelist IPs.
 	mux.HandleFunc("GET /api/v1/shield/admin-whitelist", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		ips, err := shield.GetAdminWhitelist()
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-			return
-		}
+		ips := shield.GetAdminWhitelist()
 		if ips == nil {
 			ips = []string{}
 		}
@@ -934,7 +939,9 @@ func loadConfig() config {
 		AutoBlockMin:      10,
 		PoliciesPath:      getEnv("JANUS_POLICIES_PATH", "/configs/policies.json"),
 		DBPath:            getEnv("JANUS_DB_PATH", "/app/data/janus.db"),
-		ShieldPath:        getEnv("JANUS_SHIELD_PATH", "/rules/blocklist.yaml"),
+		ShieldPath:        getEnv("JANUS_SHIELD_PATH", "/rules/janus-middleware.yaml"),
+		ShieldStatePath:   getEnv("JANUS_SHIELD_STATE_PATH", "/app/data/shield_state.json"),
+		JanusInternalURL:  getEnv("JANUS_INTERNAL_URL", "http://janus:9090"),
 		AccessLogPath:     getEnv("JANUS_ACCESS_LOG_PATH", "/logs/access.log"),
 		GeoIPPath:         getEnv("JANUS_GEOIP_DB_PATH", "/app/data/GeoLite2-City.mmdb"),
 		WhitelistPath:     getEnv("JANUS_WHITELIST_PATH", "/app/data/whitelist.json"),
@@ -968,4 +975,20 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// extractForwardedIP reads the real client IP from a Traefik forwardAuth request.
+// Traefik sets X-Forwarded-For to the original client IP before calling /auth.
+func extractForwardedIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if idx := strings.Index(xff, ","); idx != -1 {
+			return strings.TrimSpace(xff[:idx])
+		}
+		return strings.TrimSpace(xff)
+	}
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return strings.TrimSpace(xri)
+	}
+	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	return host
 }
