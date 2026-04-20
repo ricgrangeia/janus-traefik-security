@@ -73,6 +73,10 @@
       class="tab-btn px-4 py-2 text-xs font-semibold border-b-2 border-transparent text-gray-500 hover:text-gray-300 -mb-px transition">
       Policies
     </button>
+    <button id="tab-shield" onclick="switchTab('shield')"
+      class="tab-btn px-4 py-2 text-xs font-semibold border-b-2 border-transparent text-gray-500 hover:text-gray-300 -mb-px transition">
+      Shield
+    </button>
   </div>
 </nav>
 
@@ -213,6 +217,57 @@
 
 </div><!-- end #panel-policies -->
 
+<!-- ════════════════ SHIELD TAB ══════════════════════════════════════════ -->
+<div id="panel-shield" class="hidden space-y-6">
+
+  <!-- Manual block -->
+  <section>
+    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-4">
+      Block IP Address
+      <span class="ml-2 text-gray-700 normal-case font-normal">— add to Traefik blocklist instantly</span>
+    </h2>
+    <div class="rounded-lg border border-gray-800 bg-gray-900 px-4 py-4">
+      <div class="flex gap-2">
+        <input id="block-ip-input" type="text" placeholder="e.g. 1.2.3.4"
+          class="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
+        <button onclick="manualBlock()"
+          class="px-4 py-1.5 rounded bg-red-700 hover:bg-red-600 text-white text-xs font-semibold transition">
+          🚫 Block
+        </button>
+      </div>
+      <p id="block-result" class="text-xs mt-2 hidden"></p>
+    </div>
+  </section>
+
+  <!-- Blocked IPs list -->
+  <section>
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest">
+        Active Blocks
+        <span class="ml-2 text-gray-700 normal-case font-normal">— IPs denied by Traefik janus-shield middleware</span>
+      </h2>
+      <button onclick="loadShield()"
+        class="text-xs px-3 py-1.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-400 transition">
+        ↻ Refresh
+      </button>
+    </div>
+    <div id="shield-list" class="space-y-2">
+      <p class="text-gray-600 text-sm">Loading…</p>
+    </div>
+  </section>
+
+  <!-- Traefik config hint -->
+  <section>
+    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">Setup</h2>
+    <div class="rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 text-xs text-gray-500 space-y-1">
+      <p>Janus writes blocked IPs to <code class="text-indigo-400">JANUS_SHIELD_PATH</code> (default <code class="text-indigo-400">/rules/blocklist.yaml</code>).</p>
+      <p>Mount the same directory into Traefik and enable the dynamic file provider to activate the <code class="text-indigo-400">janus-shield</code> middleware.</p>
+      <p class="text-gray-600 mt-2">Add to each router you want protected: <code class="text-amber-400">traefik.http.routers.myapp.middlewares=janus-shield@file</code></p>
+    </div>
+  </section>
+
+</div><!-- end #panel-shield -->
+
 </main>
 
 <footer class="mt-16 border-t border-gray-900 text-center py-4 text-xs text-gray-700">
@@ -238,6 +293,17 @@ async function refresh() {
     render(data, history);
   } catch (e) {
     showError('Failed to reach Janus API: ' + e.message);
+  }
+}
+
+async function loadShield() {
+  const el = document.getElementById('shield-list');
+  try {
+    const res  = await fetch('/api/v1/shield');
+    const data = await res.json();
+    renderShieldList(data.blocked_ips ?? [], data.activity ?? {});
+  } catch (e) {
+    el.innerHTML = `<div class="text-xs text-red-400">Failed to load: ${esc(e.message)}</div>`;
   }
 }
 
@@ -544,9 +610,20 @@ function renderAI(ai, aiEnabled) {
         <ul class="space-y-2">
           ${ai.aggressivity_alerts.map(a => `
             <li class="text-xs">
-              <div class="flex items-center gap-2">
+              <div class="flex items-center gap-2 flex-wrap">
                 <span class="text-white font-semibold">${esc(a.service_name)}</span>
                 <span class="px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide bg-gray-800 ${typeColor(a.assessment)}">${esc(a.assessment)}</span>
+                ${a.assessment === 'bot_scan' ? `
+                  ${a.suspected_ip
+                    ? `<button onclick="blockIP(${JSON.stringify(a.suspected_ip)}, this)"
+                        class="ml-auto text-[10px] px-2 py-0.5 rounded bg-red-900 hover:bg-red-700 text-red-300 transition">
+                        🚫 Block ${esc(a.suspected_ip)}
+                      </button>`
+                    : `<button onclick="promptBlockIP(this)"
+                        class="ml-auto text-[10px] px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-400 transition">
+                        🚫 Block Last Attacker
+                      </button>`
+                  }` : ''}
               </div>
               <p class="text-gray-500 mt-0.5 pl-1">${esc(a.reasoning)}</p>
             </li>`).join('')}
@@ -700,7 +777,7 @@ function copyFix(btn, snippet) {
 
 // ── Tab switching ────────────────────────────────────────────────────────
 function switchTab(name) {
-  ['dashboard', 'policies'].forEach(t => {
+  ['dashboard', 'policies', 'shield'].forEach(t => {
     document.getElementById('panel-' + t).classList.toggle('hidden', t !== name);
     const btn = document.getElementById('tab-' + t);
     if (t === name) {
@@ -711,6 +788,7 @@ function switchTab(name) {
       btn.classList.replace('text-indigo-400', 'text-gray-500');
     }
   });
+  if (name === 'shield') loadShield();
 }
 
 // ── Drift alerts banner ──────────────────────────────────────────────────
@@ -820,6 +898,131 @@ async function fetchExecutiveSummary() {
     btn.textContent = '⟳ Ask Janus-AI';
     btn.disabled = false;
   }
+}
+
+// ── Shield management ─────────────────────────────────────────────────────
+function renderShieldList(ips, activity) {
+  const el = document.getElementById('shield-list');
+  if (!ips || !ips.length) {
+    el.innerHTML = `<div class="rounded-lg border border-emerald-900 bg-emerald-950/40 px-4 py-3 text-sm text-emerald-400">
+      ✓ No IPs currently blocked.
+    </div>`;
+    return;
+  }
+
+  el.innerHTML = ips.map(ip => {
+    const act = (activity && activity[ip]) ? activity[ip] : null;
+    const buckets = act?.hit_buckets ?? [];
+    const total   = act?.hit_count_30m ?? 0;
+    const verdict = act?.verdict ?? '';
+    const label   = act?.verdict_label ?? (verdict ? '' : 'REVIEWING');
+    const reason  = act?.verdict_reasoning ?? '';
+
+    const labelColor = {
+      'PERSISTENT ATTACKER': 'bg-red-900 text-red-300',
+      'COOLING DOWN':        'bg-amber-900 text-amber-300',
+      'REVIEWING':           'bg-gray-800 text-gray-500',
+    }[label] ?? 'bg-gray-800 text-gray-500';
+
+    // Mini sparkline SVG (6 bars, 30 min window)
+    const maxB = Math.max(...buckets, 1);
+    const bars = buckets.map((b, i) => {
+      const h = Math.max(2, Math.round((b / maxB) * 24));
+      const col = b > 0 ? '#ef4444' : '#374151';
+      return `<rect x="${i * 9}" y="${24 - h}" width="7" height="${h}" fill="${col}" rx="1"/>`;
+    }).join('');
+    const spark = buckets.length
+      ? `<svg viewBox="0 0 54 24" width="54" height="24" class="shrink-0">${bars}</svg>`
+      : '';
+
+    return `
+      <div class="rounded-lg border border-red-900 bg-gray-900 px-4 py-3 space-y-2">
+        <div class="flex items-center justify-between gap-4">
+          <span class="text-sm font-mono text-red-300 shrink-0">${esc(ip)}</span>
+          <div class="flex items-center gap-3 flex-wrap justify-end">
+            ${label ? `<span class="text-[10px] px-2 py-0.5 rounded uppercase tracking-wide ${labelColor}">${esc(label)}</span>` : ''}
+            <span class="text-xs text-gray-600">${total} hits/30m</span>
+            ${spark}
+            <button onclick="unblockIP(${JSON.stringify(ip)}, this)"
+              class="text-xs px-3 py-1 rounded bg-gray-800 hover:bg-emerald-900 text-gray-400 hover:text-emerald-300 transition">
+              Unblock
+            </button>
+          </div>
+        </div>
+        ${reason ? `<p class="text-xs text-gray-600 pl-1">AI: ${esc(reason)}</p>` : ''}
+      </div>`;
+  }).join('');
+}
+
+async function blockIP(ip, btn) {
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const res = await fetch('/api/v1/shield/block', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+    btn.textContent = '✓ Blocked';
+    btn.className = btn.className.replace('bg-red-900', 'bg-emerald-900').replace('text-red-300', 'text-emerald-300');
+    btn.disabled = true;
+  } catch (e) {
+    btn.textContent = '✗ ' + e.message;
+    btn.disabled = false;
+    setTimeout(() => { btn.textContent = orig; }, 3000);
+  }
+}
+
+async function unblockIP(ip, btn) {
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const res = await fetch('/api/v1/shield/unblock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip }),
+    });
+    if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error ?? `HTTP ${res.status}`); }
+    await loadShield();
+  } catch (e) {
+    btn.textContent = '✗ Error';
+    btn.disabled = false;
+    setTimeout(() => { btn.textContent = 'Unblock'; }, 3000);
+  }
+}
+
+async function manualBlock() {
+  const input  = document.getElementById('block-ip-input');
+  const result = document.getElementById('block-result');
+  const ip     = input.value.trim();
+  if (!ip) return;
+  result.className = 'text-xs mt-2';
+  result.textContent = 'Blocking…';
+  result.classList.remove('hidden');
+  try {
+    const res = await fetch('/api/v1/shield/block', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+    result.textContent = `✓ ${ip} is now blocked.`;
+    result.classList.add('text-emerald-400');
+    input.value = '';
+    await loadShield();
+  } catch (e) {
+    result.textContent = `✗ ${e.message}`;
+    result.classList.add('text-red-400');
+  }
+}
+
+function promptBlockIP(btn) {
+  const ip = prompt('Enter the attacker IP address to block:');
+  if (ip) blockIP(ip.trim(), btn);
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────

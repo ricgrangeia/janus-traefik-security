@@ -41,10 +41,17 @@ services:
       JANUS_POLICIES_PATH: ${JANUS_POLICIES_PATH:-/configs/policies.json}
       # SQLite database path. Set to empty string to use JSON fallback.
       JANUS_DB_PATH: ${JANUS_DB_PATH:-/app/data/janus.db}
+      # Shield: path to the Traefik dynamic-config YAML managed by Janus.
+      JANUS_SHIELD_PATH: ${JANUS_SHIELD_PATH:-/rules/blocklist.yaml}
+      # AI severity threshold (1-10) for automatic IP blocking. Default: 10.
+      JANUS_AUTO_BLOCK_MIN: ${JANUS_AUTO_BLOCK_MIN:-10}
+      # Path to Traefik's JSON access log (must be mounted from a shared volume).
+      JANUS_ACCESS_LOG_PATH: ${JANUS_ACCESS_LOG_PATH:-/logs/access.log}
     volumes:
       - /opt/janus/logs:/logs
       - /opt/janus/configs:/configs
       - /opt/janus/data:/app/data
+      - /opt/traefik/rules:/rules
     ports:
       - "${JANUS_PORT:-9090}:${JANUS_PORT:-9090}"
     networks:

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/janus-project/janus/domain"
+	"github.com/janus-project/janus/internal/infrastructure/firewall"
 	"github.com/janus-project/janus/internal/infrastructure/storage"
 	"github.com/janus-project/janus/internal/infrastructure/telegram"
 	traefikinfra "github.com/janus-project/janus/internal/infrastructure/traefik"
@@ -36,7 +37,9 @@ type AIAuditWorker struct {
 
 	notifier          ThreatNotifier
 	store             storage.Store
+	shield            *firewall.ShieldService
 	threatSeverityMin int // alert when bot_scan AI severity >= this value
+	autoBlockMin      int // auto-block when bot_scan severity >= this value (default 10)
 
 	mu     sync.RWMutex
 	latest *domain.AIInsights // nil until first successful AI run
@@ -61,6 +64,7 @@ func NewAIAuditWorker(
 		interval:          interval,
 		tracePath:         tracePath,
 		threatSeverityMin: 8,
+		autoBlockMin:      10,
 	}
 }
 
@@ -78,6 +82,17 @@ func (w *AIAuditWorker) WithNotifier(n *telegram.Notifier, severityMin int) *AIA
 // Accepts any Store — JSON Repository or SQLiteRepository both qualify.
 func (w *AIAuditWorker) WithStorage(s storage.Store) *AIAuditWorker {
 	w.store = s
+	return w
+}
+
+// WithShield attaches the ShieldService for automatic IP blocking.
+// autoBlockMin is the AI severity threshold (0-10) above which a bot_scan
+// alert with a known IP triggers an automatic block. Default is 10 (critical only).
+func (w *AIAuditWorker) WithShield(s *firewall.ShieldService, autoBlockMin int) *AIAuditWorker {
+	w.shield = s
+	if autoBlockMin > 0 {
+		w.autoBlockMin = autoBlockMin
+	}
 	return w
 }
 
@@ -271,6 +286,23 @@ func (w *AIAuditWorker) fireThreatAlerts(ai *domain.AIInsights) {
 			slog.Warn("Telegram alert failed", "service", alert.ServiceName, "err", err)
 		} else {
 			slog.Info("Telegram threat alert sent", "service", alert.ServiceName, "severity", ai.Severity)
+		}
+
+		// Auto-block: only when severity is critical AND a suspected IP is known.
+		if w.shield != nil && ai.Severity >= w.autoBlockMin && alert.SuspectedIP != "" {
+			if err := w.shield.BlockIP(alert.SuspectedIP); err != nil {
+				slog.Warn("Shield: auto-block failed", "ip", alert.SuspectedIP, "err", err)
+			} else {
+				slog.Warn("Shield: IP auto-blocked", "ip", alert.SuspectedIP, "service", alert.ServiceName)
+				if w.notifier != nil && w.notifier.Enabled() {
+					_ = w.notifier.SendThreatAlert(
+						alert.ServiceName,
+						"IP_BANNED",
+						fmt.Sprintf("Janus has automatically blocked %s due to critical bot activity (severity %d/10)", alert.SuspectedIP, ai.Severity),
+						"Review and unblock via the Janus Shield tab if this was a false positive.",
+					)
+				}
+			}
 		}
 	}
 }

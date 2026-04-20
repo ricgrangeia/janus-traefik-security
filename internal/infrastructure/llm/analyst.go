@@ -80,6 +80,7 @@ func (a *VLLMAnalyst) Analyze(report domain.AuditReport, snapshot domain.Network
 			ServiceName: ag.ServiceName,
 			Assessment:  ag.Assessment,
 			Reasoning:   ag.Reasoning,
+			SuspectedIP: ag.SuspectedIP,
 		})
 	}
 

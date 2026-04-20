@@ -39,6 +39,7 @@ type AggressivityAlert struct {
 	ServiceName string
 	Assessment  string // "bot_scan" | "bad_code" | "legitimate_traffic" | "unknown"
 	Reasoning   string
+	SuspectedIP string // optional: IP the AI identified as the likely attacker
 }
 
 // AIAnalyst is the domain service interface for AI-powered security analysis.

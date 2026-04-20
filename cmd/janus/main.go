@@ -15,8 +15,10 @@ import (
 
 	"github.com/janus-project/janus/domain"
 	"github.com/janus-project/janus/internal/app"
+	"github.com/janus-project/janus/internal/infrastructure/firewall"
 	traefikinfra "github.com/janus-project/janus/internal/infrastructure/traefik"
 	"github.com/janus-project/janus/internal/infrastructure/llm"
+	janusLogs "github.com/janus-project/janus/internal/infrastructure/logs"
 	"github.com/janus-project/janus/internal/infrastructure/storage"
 	"github.com/janus-project/janus/internal/infrastructure/telegram"
 	"github.com/janus-project/janus/internal/pulse"
@@ -43,6 +45,9 @@ type config struct {
 	ThreatSeverityMin int
 	PoliciesPath      string
 	DBPath            string
+	ShieldPath        string
+	AutoBlockMin      int    // severity threshold for automatic IP blocking (default 10)
+	AccessLogPath     string // path to Traefik's JSON access log
 }
 
 // ── API response DTOs ─────────────────────────────────────────────────────
@@ -152,6 +157,7 @@ type aggressivityDTO struct {
 	ServiceName string `json:"service_name"`
 	Assessment  string `json:"assessment"`
 	Reasoning   string `json:"reasoning"`
+	SuspectedIP string `json:"suspected_ip,omitempty"`
 }
 
 type routerInsightDTO struct {
@@ -202,6 +208,9 @@ func main() {
 		prev *domain.AuditReport
 	}
 
+	// ── Shield service (always active, AI worker uses it for auto-block) ──
+	shield := firewall.NewShieldService(cfg.ShieldPath)
+
 	// ── Optional AI worker + consult service ─────────────────────────────
 	var aiWorker     *app.AIAuditWorker
 	var consultSvc   *app.ConsultService
@@ -222,9 +231,28 @@ func main() {
 			notifier := telegram.NewNotifier(cfg.TelegramToken, cfg.TelegramChatID)
 			aiWorker.WithNotifier(notifier, cfg.ThreatSeverityMin)
 		}
+		aiWorker.WithShield(shield, cfg.AutoBlockMin)
 		ctx, cancel := context.WithCancel(context.Background())
 		_ = cancel
 		go aiWorker.Run(ctx)
+	}
+
+	// ── Access-log tailer ────────────────────────────────────────────────
+	var logTailer *janusLogs.AccessLogTailer
+	if cfg.AccessLogPath != "" {
+		logTailer = janusLogs.NewAccessLogTailer(cfg.AccessLogPath, 5*time.Second)
+		tailCtx, tailCancel := context.WithCancel(context.Background())
+		_ = tailCancel
+		go logTailer.Run(tailCtx)
+	}
+
+	// ── Ban review worker (requires AI + tailer) ─────────────────────────
+	var reviewWorker *app.BanReviewWorker
+	if llmClient != nil && logTailer != nil {
+		reviewWorker = app.NewBanReviewWorker(shield, logTailer, llmClient, 30*time.Minute)
+		reviewCtx, reviewCancel := context.WithCancel(context.Background())
+		_ = reviewCancel
+		go reviewWorker.Run(reviewCtx)
 	}
 
 	// ── HTTP server ───────────────────────────────────────────────────────
@@ -305,6 +333,101 @@ func main() {
 		if err := json.NewEncoder(w).Encode(richRepo.GetSecurityTrend(days)); err != nil {
 			slog.Error("encode trend response", "err", err)
 		}
+	})
+
+	// GET /api/v1/shield — blocked IPs enriched with 30-min activity + AI verdict.
+	mux.HandleFunc("GET /api/v1/shield", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+
+		ips, err := shield.ListBlocked()
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		if ips == nil {
+			ips = []string{}
+		}
+
+		type ipActivity struct {
+			HitBuckets      []int     `json:"hit_buckets"`       // 6 × 5-min sparkline
+			HitCount30m     int       `json:"hit_count_30m"`
+			Verdict         string    `json:"verdict,omitempty"`
+			VerdictLabel    string    `json:"verdict_label,omitempty"`
+			VerdictReasoning string   `json:"verdict_reasoning,omitempty"`
+			ReviewedAt      time.Time `json:"reviewed_at,omitempty"`
+		}
+
+		activity := make(map[string]ipActivity, len(ips))
+		for _, ip := range ips {
+			entry := ipActivity{HitBuckets: make([]int, 6)}
+			if logTailer != nil {
+				buckets := logTailer.BucketHits(ip, 6, 300)
+				total := 0
+				for _, b := range buckets {
+					total += b
+				}
+				entry.HitBuckets = buckets
+				entry.HitCount30m = total
+			}
+			if reviewWorker != nil {
+				if v, ok := reviewWorker.GetVerdict(ip); ok {
+					entry.Verdict = v.Verdict
+					entry.VerdictLabel = v.Label
+					entry.VerdictReasoning = v.Reasoning
+					entry.ReviewedAt = v.ReviewedAt
+				}
+			}
+			activity[ip] = entry
+		}
+
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"blocked_ips": ips,
+			"activity":    activity,
+		})
+	})
+
+	// POST /api/v1/shield/block — add an IP to the blocklist.
+	// Body: {"ip": "1.2.3.4"}
+	mux.HandleFunc("POST /api/v1/shield/block", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var body struct {
+			IP string `json:"ip"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.IP == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "body must be {\"ip\":\"x.x.x.x\"}"})
+			return
+		}
+		if err := shield.BlockIP(body.IP); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		slog.Info("Shield: IP blocked via API", "ip", body.IP)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "blocked", "ip": body.IP})
+	})
+
+	// POST /api/v1/shield/unblock — remove an IP from the blocklist.
+	// Body: {"ip": "1.2.3.4"}
+	mux.HandleFunc("POST /api/v1/shield/unblock", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var body struct {
+			IP string `json:"ip"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.IP == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "body must be {\"ip\":\"x.x.x.x\"}"})
+			return
+		}
+		if err := shield.UnblockIP(body.IP); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		slog.Info("Shield: IP unblocked via API", "ip", body.IP)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "unblocked", "ip": body.IP})
 	})
 
 	// GET /api/v1/ai/consult — on-demand executive summary over audit history.
@@ -548,6 +671,7 @@ func toAIInsightsDTO(ai *domain.AIInsights) *aiInsightsDTO {
 			ServiceName: a.ServiceName,
 			Assessment:  a.Assessment,
 			Reasoning:   a.Reasoning,
+			SuspectedIP: a.SuspectedIP,
 		})
 	}
 	return dto
@@ -601,8 +725,16 @@ func loadConfig() config {
 		TelegramToken:     getEnv("TELEGRAM_BOT_TOKEN", ""),
 		TelegramChatID:    getEnv("TELEGRAM_CHAT_ID", ""),
 		ThreatSeverityMin: 8,
+		AutoBlockMin:      10,
 		PoliciesPath:      getEnv("JANUS_POLICIES_PATH", "/configs/policies.json"),
 		DBPath:            getEnv("JANUS_DB_PATH", "/app/data/janus.db"),
+		ShieldPath:        getEnv("JANUS_SHIELD_PATH", "/rules/blocklist.yaml"),
+		AccessLogPath:     getEnv("JANUS_ACCESS_LOG_PATH", "/logs/access.log"),
+	}
+	if v := os.Getenv("JANUS_AUTO_BLOCK_MIN"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 10 {
+			cfg.AutoBlockMin = n
+		}
 	}
 	if v := os.Getenv("JANUS_ALERT_THRESHOLD"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 && f <= 1 {

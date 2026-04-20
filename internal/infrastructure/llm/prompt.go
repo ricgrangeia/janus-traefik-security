@@ -33,7 +33,8 @@ Use this exact schema:
     {
       "service_name": "<name@provider>",
       "assessment": "<one of: bot_scan | bad_code | legitimate_traffic | unknown>",
-      "reasoning": "<concise classification explanation>"
+      "reasoning": "<concise classification explanation>",
+      "suspected_ip": "<optional: IP address of likely attacker if identifiable from context, else empty string>"
     }
   ],
   "router_insights": {
@@ -73,6 +74,7 @@ type aggressivityDTO struct {
 	ServiceName string `json:"service_name"`
 	Assessment  string `json:"assessment"`
 	Reasoning   string `json:"reasoning"`
+	SuspectedIP string `json:"suspected_ip"`
 }
 
 type routerInsightDTO struct {
