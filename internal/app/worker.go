@@ -273,27 +273,8 @@ func (w *AIAuditWorker) fireThreatAlerts(ai *domain.AIInsights) {
 			continue
 		}
 
-		fix := "Apply IP Allowlist and rate limiting immediately."
-		// Try to surface a specific remediation from the router insights.
-		for name, ri := range ai.RouterInsights {
-			if strings.Contains(strings.ToLower(name), strings.ToLower(strings.SplitN(alert.ServiceName, "@", 2)[0])) {
-				if len(ri.Remediation) > 0 {
-					fix = strings.Join(ri.Remediation, "; ")
-				}
-				break
-			}
-		}
-
-		if err := w.notifier.SendThreatAlert(
-			alert.ServiceName,
-			"BOT_SCAN",
-			alert.Reasoning,
-			fix,
-		); err != nil {
-			slog.Warn("Telegram alert failed", "service", alert.ServiceName, "err", err)
-		} else {
-			slog.Info("Telegram threat alert sent", "service", alert.ServiceName, "severity", ai.Severity)
-		}
+		// BOT_SCAN preview alert intentionally disabled — only auto-block (IP_BANNED)
+		// alerts are sent to Telegram. Re-enable here if a noisier feed is wanted.
 
 		// Auto-block: only when severity is critical AND a suspected IP is known.
 		if w.shield != nil && ai.Severity >= w.autoBlockMin && alert.SuspectedIP != "" {

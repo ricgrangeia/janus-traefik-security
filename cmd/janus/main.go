@@ -170,6 +170,27 @@ func main() {
 		})
 	}
 
+	// ── Auto-block alert enrichment (geo + traffic) ─────────────────────
+	if aiWorker != nil {
+		aiWorker.WithIPEnricher(func(ip string) app.IPContext {
+			ctx := app.IPContext{}
+			meta := geoReader.Lookup(ip)
+			ctx.CountryCode = meta.CountryCode
+			ctx.CountryName = meta.CountryName
+			ctx.City = meta.City
+			if trafficAnalyzer != nil {
+				if s, ok := trafficAnalyzer.StatsForIP(ip); ok {
+					ctx.Hits = s.Total
+					ctx.Count4xx = s.Count4xx
+					ctx.Count5xx = s.Count5xx
+					ctx.ErrorRate = s.ErrorRate
+					ctx.TopRouter = s.TopRouter
+				}
+			}
+			return ctx
+		})
+	}
+
 	// ── Ban review worker (requires AI + tailer) ─────────────────────────
 	var reviewWorker *app.BanReviewWorker
 	if llmClient != nil && logTailer != nil {
