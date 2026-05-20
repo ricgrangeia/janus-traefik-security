@@ -133,6 +133,7 @@ open http://localhost:9090
 | Variable | Default | Description |
 | --- | --- | --- |
 | `JANUS_GEOIP_DB_PATH` | `/app/data/GeoLite2-City.mmdb` | MaxMind GeoLite2-City database path (optional) |
+| `JANUS_GEOIP_ASN_DB_PATH` | `/app/data/GeoLite2-ASN.mmdb` | MaxMind GeoLite2-ASN database path (optional but recommended — feeds the LLM the operating organisation, e.g. "Amazon", "Hetzner", which dramatically reduces false HOSTILE labels on monitoring/crawler traffic) |
 
 ### Authentication
 

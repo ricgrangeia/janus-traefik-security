@@ -56,6 +56,7 @@ type config struct {
 	AutoBlockMin      int
 	AccessLogPath     string
 	GeoIPPath         string
+	GeoIPASNPath      string
 	WhitelistPath     string
 	AdminPasswordHash string
 	APIToken          string
@@ -139,6 +140,13 @@ func main() {
 	}
 	defer geoReader.Close()
 
+	asnReader, err := geoip.NewASNReader(cfg.GeoIPASNPath)
+	if err != nil {
+		slog.Warn("GeoIP ASN database unavailable", "path", cfg.GeoIPASNPath, "err", err)
+		asnReader, _ = geoip.NewASNReader("")
+	}
+	defer asnReader.Close()
+
 	// ── Access log ───────────────────────────────────────────────────────
 	var (
 		logTailer       *janusLogs.AccessLogTailer
@@ -201,7 +209,8 @@ func main() {
 	var intelSvc *app.ThreatIntelService
 	if llmClient != nil && trafficAnalyzer != nil {
 		intelSvc = app.NewThreatIntelService(trafficAnalyzer, geoReader, llmClient).
-			WithWhitelist(whitelist)
+			WithWhitelist(whitelist).
+			WithASN(asnReader)
 	}
 
 	// ── HTTP server ───────────────────────────────────────────────────────
@@ -329,6 +338,7 @@ func loadConfig() config {
 		JanusInternalURL:  getEnv("JANUS_INTERNAL_URL", "http://janus:9090"),
 		AccessLogPath:     getEnv("JANUS_ACCESS_LOG_PATH", "/logs/access.log"),
 		GeoIPPath:         getEnv("JANUS_GEOIP_DB_PATH", "/app/data/GeoLite2-City.mmdb"),
+		GeoIPASNPath:      getEnv("JANUS_GEOIP_ASN_DB_PATH", "/app/data/GeoLite2-ASN.mmdb"),
 		WhitelistPath:     getEnv("JANUS_WHITELIST_PATH", "/app/data/whitelist.json"),
 		AdminPasswordHash: getEnv("JANUS_ADMIN_PASSWORD_HASH", ""),
 		APIToken:          getEnv("JANUS_API_TOKEN", ""),

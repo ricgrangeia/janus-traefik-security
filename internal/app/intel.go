@@ -15,19 +15,24 @@ import (
 
 // ── Domain types ─────────────────────────────────────────────────────────────
 
-// IPProfile combines traffic stats with geographic and AI classification data.
+// IPProfile combines traffic stats with geographic, ASN, and AI classification data.
 type IPProfile struct {
 	IP             string
 	CountryCode    string
 	CountryName    string
 	City           string
+	ASN            uint   // autonomous-system number
+	Organization   string // ASN org name (e.g. "Amazon.com, Inc.", "Hetzner Online GmbH")
 	Total          int
 	Count2xx       int
 	Count4xx       int
 	Count5xx       int
 	ErrorRate      float64
 	TopRouter      string
-	Classification string // "HOSTILE" | "SUSPICIOUS" | "LEGITIMATE" | "UNKNOWN"
+	TopPaths       []string // up to 3 most-hit paths, formatted "path (count)"
+	TopStatuses    []string // up to 3 status codes, formatted "code:count"
+	TopUserAgents  []string // up to 2 most-seen UAs
+	Classification string   // "HOSTILE" | "SUSPICIOUS" | "LEGITIMATE" | "UNKNOWN"
 	Reasoning      string
 }
 
@@ -66,6 +71,7 @@ type ThreatIntelReport struct {
 type ThreatIntelService struct {
 	analyzer  *logs.TrafficAnalyzer
 	geo       *geoip.Reader
+	asn       *geoip.ASNReader // optional — nil when no ASN db is configured
 	client    *llm.Client
 	whitelist *WhitelistService // optional — nil means no trusted IPs configured
 
@@ -74,7 +80,7 @@ type ThreatIntelService struct {
 	running bool // guard against concurrent analysis
 }
 
-// NewThreatIntelService creates the service. All three arguments are required.
+// NewThreatIntelService creates the service. analyzer, geo, and client are required.
 func NewThreatIntelService(
 	analyzer *logs.TrafficAnalyzer,
 	geo *geoip.Reader,
@@ -85,6 +91,14 @@ func NewThreatIntelService(
 		geo:      geo,
 		client:   client,
 	}
+}
+
+// WithASN attaches an ASN reader. When set, IP profiles include the operating
+// organisation, which materially improves the LLM's ability to distinguish
+// crawler/monitoring traffic from genuine attackers.
+func (s *ThreatIntelService) WithASN(r *geoip.ASNReader) *ThreatIntelService {
+	s.asn = r
+	return s
 }
 
 // WithWhitelist attaches a trusted-IP whitelist. Whitelisted IPs are passed to
@@ -131,21 +145,42 @@ func (s *ThreatIntelService) analyze() error {
 		return fmt.Errorf("no traffic data yet — access log may be empty or not configured")
 	}
 
-	// Enrich with geo data.
+	// Enrich with geo + ASN + per-IP fingerprint.
 	profiles := make([]IPProfile, 0, len(topStats))
 	for _, stat := range topStats {
 		meta := s.geo.Lookup(stat.IP)
+		var asn geoip.ASNInfo
+		if s.asn != nil {
+			asn = s.asn.Lookup(stat.IP)
+		}
+		paths := make([]string, 0, len(stat.TopPaths))
+		for _, p := range stat.TopPaths {
+			paths = append(paths, fmt.Sprintf("%s (%d)", p.Key, p.Count))
+		}
+		statuses := make([]string, 0, len(stat.TopStatuses))
+		for _, s := range stat.TopStatuses {
+			statuses = append(statuses, fmt.Sprintf("%d:%d", s.Code, s.Count))
+		}
+		uas := make([]string, 0, len(stat.TopUserAgents))
+		for _, ua := range stat.TopUserAgents {
+			uas = append(uas, ua.Key)
+		}
 		profiles = append(profiles, IPProfile{
-			IP:          stat.IP,
-			CountryCode: meta.CountryCode,
-			CountryName: meta.CountryName,
-			City:        meta.City,
-			Total:       stat.Total,
-			Count2xx:    stat.Count2xx,
-			Count4xx:    stat.Count4xx,
-			Count5xx:    stat.Count5xx,
-			ErrorRate:   stat.ErrorRate,
-			TopRouter:   stat.TopRouter,
+			IP:            stat.IP,
+			CountryCode:   meta.CountryCode,
+			CountryName:   meta.CountryName,
+			City:          meta.City,
+			ASN:           asn.ASN,
+			Organization:  asn.Organization,
+			Total:         stat.Total,
+			Count2xx:      stat.Count2xx,
+			Count4xx:      stat.Count4xx,
+			Count5xx:      stat.Count5xx,
+			ErrorRate:     stat.ErrorRate,
+			TopRouter:     stat.TopRouter,
+			TopPaths:      paths,
+			TopStatuses:   statuses,
+			TopUserAgents: uas,
 		})
 	}
 
@@ -248,24 +283,33 @@ func buildIntelContext(profiles []IPProfile, totalUnique int, trustedIPs []strin
 	var b strings.Builder
 	fmt.Fprintf(&b, "=== TRAFFIC INTELLIGENCE SNAPSHOT ===\n")
 	fmt.Fprintf(&b, "Analysis window: last 1 hour\n")
-	fmt.Fprintf(&b, "Total unique IPs tracked: %d\n\n", totalUnique)
-	fmt.Fprintf(&b, "TOP %d IPs BY ACTIVITY:\n", len(profiles))
-	fmt.Fprintf(&b, "%-18s %-6s %-20s %-8s %6s %6s %6s %7s  %s\n",
-		"IP", "CC", "Country", "City", "Total", "2xx", "4xx+5xx", "Err%", "Top Router")
-	b.WriteString(strings.Repeat("-", 110) + "\n")
+	fmt.Fprintf(&b, "Total unique IPs tracked: %d\n", totalUnique)
 	if len(trustedIPs) > 0 {
-		fmt.Fprintf(&b, "\nTRUSTED IPs (owner-confirmed — classify as LEGITIMATE regardless of traffic): %s\n\n",
+		fmt.Fprintf(&b, "Trusted IPs (owner-confirmed — classify as LEGITIMATE): %s\n",
 			strings.Join(trustedIPs, ", "))
 	}
-	for _, p := range profiles {
-		city := p.City
-		if len(city) > 18 {
-			city = city[:18]
+	b.WriteString("\nClassification guidance:\n")
+	b.WriteString("- Cloud providers (AWS, GCP, Azure, Hetzner, Datacamp, Linode, OVH, DigitalOcean) with moderate error rates and normal-looking paths are usually crawlers/monitoring — NOT hostile.\n")
+	b.WriteString("- 100% error rate on non-existent admin paths (/wp-admin, /.env, /.git, /phpmyadmin) is unambiguous bot scanning.\n")
+	b.WriteString("- bot/crawler/monitoring user-agents (UptimeRobot, Pingdom, GoogleBot, bingbot, ahrefsbot) are LEGITIMATE.\n")
+	b.WriteString("- Empty/scripted UAs (python-requests, curl, Go-http-client, libwww-perl) combined with high error rate suggest probing.\n")
+	b.WriteString("- IPs from the same /24 hitting the same router with the same pattern are ONE cluster — give them the same verdict.\n\n")
+
+	for i, p := range profiles {
+		fmt.Fprintf(&b, "[%d] %s — %s, %s (%s) — ASN %d %s\n",
+			i+1, p.IP, p.City, p.CountryName, p.CountryCode, p.ASN, p.Organization)
+		fmt.Fprintf(&b, "    Hits: %d (2xx=%d 4xx=%d 5xx=%d, err%%=%.1f) | Top router: %s\n",
+			p.Total, p.Count2xx, p.Count4xx, p.Count5xx, p.ErrorRate*100, p.TopRouter)
+		if len(p.TopPaths) > 0 {
+			fmt.Fprintf(&b, "    Paths: %s\n", strings.Join(p.TopPaths, " | "))
 		}
-		fmt.Fprintf(&b, "%-18s %-6s %-20s %-8s %6d %6d %7d %6.1f%%  %s\n",
-			p.IP, p.CountryCode, truncate(p.CountryName, 20), truncate(city, 18),
-			p.Total, p.Count2xx, p.Count4xx+p.Count5xx, p.ErrorRate*100, p.TopRouter,
-		)
+		if len(p.TopStatuses) > 0 {
+			fmt.Fprintf(&b, "    Status codes: %s\n", strings.Join(p.TopStatuses, " "))
+		}
+		if len(p.TopUserAgents) > 0 {
+			fmt.Fprintf(&b, "    User-agent: %s\n", strings.Join(p.TopUserAgents, " | "))
+		}
+		b.WriteString("\n")
 	}
 	return b.String()
 }
@@ -340,13 +384,6 @@ func parseIntelResponse(raw string, profiles []IPProfile) (*ThreatIntelReport, e
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n-1] + "…"
-}
 
 // countryFlag converts an ISO 3166-1 alpha-2 code to the Unicode flag emoji.
 func countryFlag(code string) string {

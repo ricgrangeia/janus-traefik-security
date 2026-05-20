@@ -15,14 +15,29 @@ import (
 
 // IPStats aggregates access patterns for a single IP over the retention window.
 type IPStats struct {
-	IP        string
-	Total     int
-	Count2xx  int
-	Count4xx  int
-	Count5xx  int
-	ErrorRate float64 // (4xx+5xx) / total
-	TopRouter string
-	LastSeen  time.Time
+	IP            string
+	Total         int
+	Count2xx      int
+	Count4xx      int
+	Count5xx      int
+	ErrorRate     float64 // (4xx+5xx) / total
+	TopRouter     string
+	TopPaths      []KVCount  // up to 3 most-hit paths
+	TopStatuses   []IntCount // status code histogram, top 3
+	TopUserAgents []KVCount  // up to 2 most-seen UAs
+	LastSeen      time.Time
+}
+
+// KVCount is a (string, count) tuple used for top-N histograms in IPStats.
+type KVCount struct {
+	Key   string
+	Count int
+}
+
+// IntCount is a (int, count) tuple used for status-code histograms in IPStats.
+type IntCount struct {
+	Code  int
+	Count int
 }
 
 // ErrorSample is one 4xx/5xx request captured for diagnostic display.
@@ -42,21 +57,28 @@ type analyzerEntry struct {
 	RouterName       string `json:"RouterName"`
 	StartUTC         string `json:"StartUTC"`
 	Time             string `json:"time"`
+	UserAgent        string `json:"request_User-Agent"`
 }
 
 const (
-	retentionPeriod    = time.Hour
+	retentionPeriod      = time.Hour
 	maxErrorSamplesPerIP = 100 // ring-buffer cap
+	maxPathsPerIP        = 256 // bounded map cap — new keys ignored past this
+	maxUserAgentsPerIP   = 64
+	maxUserAgentLen      = 120 // truncate to avoid memory blowup from long UAs
 )
 
 type ipCounter struct {
-	total    int
-	count2xx int
-	count4xx int
-	count5xx int
-	routers  map[string]int
-	lastSeen time.Time
-	errors   []ErrorSample // bounded ring of recent 4xx/5xx
+	total      int
+	count2xx   int
+	count4xx   int
+	count5xx   int
+	routers    map[string]int
+	paths      map[string]int
+	statuses   map[int]int
+	userAgents map[string]int
+	lastSeen   time.Time
+	errors     []ErrorSample // bounded ring of recent 4xx/5xx
 }
 
 // TrafficAnalyzer reads the full Traefik access log to build IP traffic statistics
@@ -104,27 +126,7 @@ func (a *TrafficAnalyzer) TopIPs(n int) []IPStats {
 
 	stats := make([]IPStats, 0, len(a.counts))
 	for ip, c := range a.counts {
-		er := 0.0
-		if c.total > 0 {
-			er = float64(c.count4xx+c.count5xx) / float64(c.total)
-		}
-		topRouter, maxH := "", 0
-		for r, h := range c.routers {
-			if h > maxH {
-				maxH = h
-				topRouter = r
-			}
-		}
-		stats = append(stats, IPStats{
-			IP:        ip,
-			Total:     c.total,
-			Count2xx:  c.count2xx,
-			Count4xx:  c.count4xx,
-			Count5xx:  c.count5xx,
-			ErrorRate: er,
-			TopRouter: topRouter,
-			LastSeen:  c.lastSeen,
-		})
+		stats = append(stats, statsFromCounter(ip, c))
 	}
 	sort.Slice(stats, func(i, j int) bool {
 		return stats[i].Total > stats[j].Total
@@ -143,6 +145,10 @@ func (a *TrafficAnalyzer) StatsForIP(ip string) (IPStats, bool) {
 	if !ok {
 		return IPStats{}, false
 	}
+	return statsFromCounter(ip, c), true
+}
+
+func statsFromCounter(ip string, c *ipCounter) IPStats {
 	er := 0.0
 	if c.total > 0 {
 		er = float64(c.count4xx+c.count5xx) / float64(c.total)
@@ -155,15 +161,48 @@ func (a *TrafficAnalyzer) StatsForIP(ip string) (IPStats, bool) {
 		}
 	}
 	return IPStats{
-		IP:        ip,
-		Total:     c.total,
-		Count2xx:  c.count2xx,
-		Count4xx:  c.count4xx,
-		Count5xx:  c.count5xx,
-		ErrorRate: er,
-		TopRouter: topRouter,
-		LastSeen:  c.lastSeen,
-	}, true
+		IP:            ip,
+		Total:         c.total,
+		Count2xx:      c.count2xx,
+		Count4xx:      c.count4xx,
+		Count5xx:      c.count5xx,
+		ErrorRate:     er,
+		TopRouter:     topRouter,
+		TopPaths:      topNStringMap(c.paths, 3),
+		TopStatuses:   topNIntMap(c.statuses, 3),
+		TopUserAgents: topNStringMap(c.userAgents, 2),
+		LastSeen:      c.lastSeen,
+	}
+}
+
+func topNStringMap(m map[string]int, n int) []KVCount {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]KVCount, 0, len(m))
+	for k, v := range m {
+		out = append(out, KVCount{Key: k, Count: v})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Count > out[j].Count })
+	if len(out) > n {
+		out = out[:n]
+	}
+	return out
+}
+
+func topNIntMap(m map[int]int, n int) []IntCount {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]IntCount, 0, len(m))
+	for k, v := range m {
+		out = append(out, IntCount{Code: k, Count: v})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Count > out[j].Count })
+	if len(out) > n {
+		out = out[:n]
+	}
+	return out
 }
 
 // UniqueIPCount returns the number of distinct IPs tracked in the retention window.
@@ -226,6 +265,7 @@ func (a *TrafficAnalyzer) poll() {
 		method string
 		path   string
 		router string
+		ua     string
 		ts     time.Time
 	}
 	var updates []update
@@ -245,7 +285,7 @@ func (a *TrafficAnalyzer) poll() {
 			continue
 		}
 		ts := parseTime(e.StartUTC, e.Time)
-		updates = append(updates, update{ip, e.DownstreamStatus, e.RequestMethod, e.RequestPath, e.RouterName, ts})
+		updates = append(updates, update{ip, e.DownstreamStatus, e.RequestMethod, e.RequestPath, e.RouterName, e.UserAgent, ts})
 	}
 
 	a.mu.Lock()
@@ -253,7 +293,12 @@ func (a *TrafficAnalyzer) poll() {
 	for _, u := range updates {
 		c := a.counts[u.ip]
 		if c == nil {
-			c = &ipCounter{routers: make(map[string]int)}
+			c = &ipCounter{
+				routers:    make(map[string]int),
+				paths:      make(map[string]int),
+				statuses:   make(map[int]int),
+				userAgents: make(map[string]int),
+			}
 			a.counts[u.ip] = c
 		}
 		c.total++
@@ -267,6 +312,23 @@ func (a *TrafficAnalyzer) poll() {
 		}
 		if u.router != "" {
 			c.routers[u.router]++
+		}
+		if u.path != "" {
+			if _, exists := c.paths[u.path]; exists || len(c.paths) < maxPathsPerIP {
+				c.paths[u.path]++
+			}
+		}
+		if u.status > 0 {
+			c.statuses[u.status]++
+		}
+		if u.ua != "" {
+			ua := u.ua
+			if len(ua) > maxUserAgentLen {
+				ua = ua[:maxUserAgentLen]
+			}
+			if _, exists := c.userAgents[ua]; exists || len(c.userAgents) < maxUserAgentsPerIP {
+				c.userAgents[ua]++
+			}
 		}
 		if u.ts.After(c.lastSeen) {
 			c.lastSeen = u.ts
