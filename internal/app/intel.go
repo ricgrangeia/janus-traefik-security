@@ -337,13 +337,13 @@ type intelResponseDTO struct {
 }
 
 func parseIntelResponse(raw string, profiles []IPProfile) (*ThreatIntelReport, error) {
-	clean := strings.TrimSpace(raw)
-	clean = strings.TrimPrefix(clean, "```json")
-	clean = strings.TrimPrefix(clean, "```")
-	clean = strings.TrimSuffix(clean, "```")
+	clean := llm.ExtractJSONObject(raw)
+	if clean == "" {
+		return nil, fmt.Errorf("JSON parse: no JSON object found in LLM reply")
+	}
 
 	var dto intelResponseDTO
-	if err := json.Unmarshal([]byte(strings.TrimSpace(clean)), &dto); err != nil {
+	if err := json.Unmarshal([]byte(clean), &dto); err != nil {
 		return nil, fmt.Errorf("JSON parse: %w", err)
 	}
 

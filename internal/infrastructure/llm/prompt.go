@@ -274,9 +274,13 @@ func buildPromptPayload(report domain.AuditReport, snapshot domain.NetworkSnapsh
 }
 
 // ParseResponse converts the model's raw JSON reply into the internal DTO.
+// Tolerant of leading/trailing prose and markdown fences — extracts the first
+// balanced { … } block before attempting to unmarshal.
 func ParseResponse(raw string) (*aiResponseDTO, error) {
-	clean := stripMarkdownFences(raw)
-
+	clean := ExtractJSONObject(raw)
+	if clean == "" {
+		return nil, fmt.Errorf("parse AI response JSON: no JSON object found in reply")
+	}
 	var dto aiResponseDTO
 	if err := json.Unmarshal([]byte(clean), &dto); err != nil {
 		return nil, fmt.Errorf("parse AI response JSON: %w", err)
@@ -284,38 +288,46 @@ func ParseResponse(raw string) (*aiResponseDTO, error) {
 	return &dto, nil
 }
 
-func stripMarkdownFences(s string) string {
-	s = trimPrefix(s, "```json")
-	s = trimPrefix(s, "```")
-	s = trimSuffix(s, "```")
-	return s
-}
-
-func trimPrefix(s, prefix string) string {
-	idx := len(prefix)
-	if len(s) >= idx && s[:idx] == prefix {
-		nl := indexOf(s[idx:], '\n')
-		if nl >= 0 {
-			return s[idx+nl+1:]
-		}
-		return s[idx:]
-	}
-	return s
-}
-
-func trimSuffix(s, suffix string) string {
-	n := len(s) - len(suffix)
-	if n >= 0 && s[n:] == suffix {
-		return s[:n]
-	}
-	return s
-}
-
-func indexOf(s string, b byte) int {
+// ExtractJSONObject returns the first top-level { … } block in s, ignoring
+// braces inside JSON strings (and their escapes). Returns "" when no balanced
+// object is found. Useful for stripping markdown fences, chain-of-thought
+// preludes, or trailing prose that some LLMs add despite instructions.
+func ExtractJSONObject(s string) string {
+	start := -1
+	depth := 0
+	inString := false
+	escape := false
 	for i := 0; i < len(s); i++ {
-		if s[i] == b {
-			return i
+		ch := s[i]
+		if escape {
+			escape = false
+			continue
+		}
+		if inString {
+			switch ch {
+			case '\\':
+				escape = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inString = true
+		case '{':
+			if depth == 0 {
+				start = i
+			}
+			depth++
+		case '}':
+			if depth > 0 {
+				depth--
+				if depth == 0 && start >= 0 {
+					return s[start : i+1]
+				}
+			}
 		}
 	}
-	return -1
+	return ""
 }
