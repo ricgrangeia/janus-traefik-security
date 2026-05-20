@@ -12,6 +12,7 @@ import (
 
 	"github.com/janus-project/janus/domain"
 	"github.com/janus-project/janus/internal/infrastructure/firewall"
+	"github.com/janus-project/janus/internal/infrastructure/llm"
 	"github.com/janus-project/janus/internal/infrastructure/storage"
 	"github.com/janus-project/janus/internal/infrastructure/telegram"
 	traefikinfra "github.com/janus-project/janus/internal/infrastructure/traefik"
@@ -60,8 +61,9 @@ type AIAuditWorker struct {
 	threatSeverityMin int // alert when bot_scan AI severity >= this value
 	autoBlockMin      int // auto-block when bot_scan severity >= this value (default 10)
 
-	mu     sync.RWMutex
-	latest *domain.AIInsights // nil until first successful AI run
+	mu          sync.RWMutex
+	latest      *domain.AIInsights // nil until first successful AI run
+	lastCtxHash string             // last input hash sent to the LLM
 }
 
 // NewAIAuditWorker creates a worker. tracePath is the JSONL trace file path
@@ -179,6 +181,23 @@ func (w *AIAuditWorker) runOnce() {
 	report := w.auditor.Audit(snapshot)
 	report.GeneratedAt = time.Now().UTC()
 
+	// Skip the LLM call when config + alert set hasn't changed since last cycle —
+	// saves tokens during stable periods. Always run the first cycle.
+	ctxHash := llm.ContextHash(report, snapshot)
+	w.mu.RLock()
+	prevHash := w.lastCtxHash
+	prevInsights := w.latest
+	w.mu.RUnlock()
+	if prevHash != "" && prevHash == ctxHash && prevInsights != nil {
+		slog.Info("AI audit skipped — no config or alert change", "elapsed_ms", time.Since(start).Milliseconds())
+		refreshed := *prevInsights
+		refreshed.GeneratedAt = time.Now().UTC()
+		w.mu.Lock()
+		w.latest = &refreshed
+		w.mu.Unlock()
+		return
+	}
+
 	enriched, err := w.analyst.Analyze(report, snapshot)
 	if err != nil {
 		slog.Error("AI audit: analyst failed", "err", err,
@@ -212,6 +231,7 @@ func (w *AIAuditWorker) runOnce() {
 
 	w.mu.Lock()
 	w.latest = ai
+	w.lastCtxHash = ctxHash
 	w.mu.Unlock()
 }
 

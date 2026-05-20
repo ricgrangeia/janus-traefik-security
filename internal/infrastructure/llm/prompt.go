@@ -1,8 +1,11 @@
 package llm
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/janus-project/janus/domain"
@@ -86,10 +89,58 @@ type routerInsightDTO struct {
 	Remediation   []string `json:"remediation"`
 }
 
-// BuildContext serialises the AuditReport and NetworkSnapshot into the user message
-// sent to the model. The full JSON state is included without truncation — Qwen 2.5
-// supports a 100k-token context window. env and knownMiddlewares add deployment
-// metadata so the model can reason about what is intentionally secure vs misconfigured.
+// ── Slim prompt DTOs ──────────────────────────────────────────────────────
+// These intentionally omit fields the LLM does not need (Provider, Status,
+// IsRedirect, AIInsights, AIReasoning) and use compact JSON tags.
+
+type promptRouter struct {
+	Name        string   `json:"name"`
+	Rule        string   `json:"rule"`
+	Entrypoints []string `json:"entrypoints,omitempty"`
+	Middlewares []string `json:"middlewares,omitempty"`
+	HasTLS      bool     `json:"has_tls"`
+	IsHTTPS     bool     `json:"is_https"`
+}
+
+type promptIssue struct {
+	Code        string `json:"code"`
+	Description string `json:"description"`
+	Severity    string `json:"severity"`
+}
+
+type promptPolicyViolation struct {
+	PolicyName string   `json:"policy"`
+	Pattern    string   `json:"pattern"`
+	Missing    []string `json:"missing"`
+}
+
+type promptRouterAudit struct {
+	Router           promptRouter            `json:"router"`
+	Score            int                     `json:"score"`
+	Issues           []promptIssue           `json:"issues,omitempty"`
+	PolicyViolations []promptPolicyViolation `json:"policy_violations,omitempty"`
+}
+
+type promptPulseAlert struct {
+	ServiceName string  `json:"service"`
+	ErrorRate   float64 `json:"err_rate"`
+}
+
+type promptPayload struct {
+	OverallScore int                 `json:"overall_score"`
+	Routers      []promptRouterAudit `json:"routers"`
+	Middlewares  []middlewareRef     `json:"middlewares,omitempty"`
+	PulseAlerts  []promptPulseAlert  `json:"pulse_alerts,omitempty"`
+}
+
+type middlewareRef struct {
+	Name string `json:"name"`
+	Type string `json:"type,omitempty"`
+}
+
+// BuildContext serialises the audit into a slim JSON payload for the LLM.
+// Drops the snapshot duplicate (RouterAudit already embeds Router) and
+// trims fields the model does not reason about.
 func BuildContext(
 	report domain.AuditReport,
 	snapshot domain.NetworkSnapshot,
@@ -97,8 +148,8 @@ func BuildContext(
 	knownMiddlewares []string,
 	protectedIPs []string,
 ) string {
-	reportJSON, _ := json.MarshalIndent(report, "", "  ")
-	snapshotJSON, _ := json.MarshalIndent(snapshot, "", "  ")
+	payload := buildPromptPayload(report, snapshot)
+	jsonBytes, _ := json.Marshal(payload) // compact, no indent
 
 	middlewareList := "none configured"
 	if len(knownMiddlewares) > 0 {
@@ -111,16 +162,13 @@ func BuildContext(
 			strings.Join(protectedIPs, ", "))
 	}
 
-	return fmt.Sprintf(`=== JANUS NETWORK SNAPSHOT ===
-Environment          : %s
+	return fmt.Sprintf(`=== JANUS AUDIT SNAPSHOT ===
+Environment: %s
 Known Secure Middlewares: %s
-Overall Score        : %d / 100
-Traefik Reachable    : %v
-Snapshot Timestamp   : %s%s
---- Security Audit Results (JSON) ---
-%s
-
---- Full Traefik Network State (JSON) ---
+Overall Score: %d / 100
+Traefik Reachable: %v
+Snapshot: %s%s
+--- Audit (compact JSON) ---
 %s
 `,
 		env,
@@ -129,9 +177,100 @@ Snapshot Timestamp   : %s%s
 		report.TraefikOK,
 		report.GeneratedAt.Format("2006-01-02T15:04:05Z"),
 		protectedSection,
-		string(reportJSON),
-		string(snapshotJSON),
+		string(jsonBytes),
 	)
+}
+
+// ContextHash returns a stable hash of the structural inputs the LLM cares
+// about. Pulse error rates are excluded (they flap cycle-to-cycle); the set
+// of services with active alerts IS included so a new bot scan still triggers
+// a fresh analysis.
+func ContextHash(report domain.AuditReport, snapshot domain.NetworkSnapshot) string {
+	type hashInput struct {
+		OverallScore       int
+		Routers            []promptRouterAudit
+		Middlewares        []middlewareRef
+		ServicesWithAlerts []string
+	}
+
+	payload := buildPromptPayload(report, snapshot)
+	services := make([]string, 0, len(payload.PulseAlerts))
+	for _, a := range payload.PulseAlerts {
+		services = append(services, a.ServiceName)
+	}
+	sort.Strings(services)
+
+	h := sha256.New()
+	_ = json.NewEncoder(h).Encode(hashInput{
+		OverallScore:       payload.OverallScore,
+		Routers:            payload.Routers,
+		Middlewares:        payload.Middlewares,
+		ServicesWithAlerts: services,
+	})
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func buildPromptPayload(report domain.AuditReport, snapshot domain.NetworkSnapshot) promptPayload {
+	audits := make([]promptRouterAudit, 0, len(report.RouterAudits))
+	for _, ra := range report.RouterAudits {
+		if ra.Router.IsRedirect {
+			continue // redirect-only routers are infrastructure noise
+		}
+		pr := promptRouter{
+			Name:        ra.Router.Name,
+			Rule:        ra.Router.Rule,
+			Entrypoints: ra.Router.Entrypoints,
+			Middlewares: ra.Router.Middlewares,
+			HasTLS:      ra.Router.HasTLS,
+			IsHTTPS:     ra.Router.IsHTTPS,
+		}
+		issues := make([]promptIssue, 0, len(ra.Issues))
+		for _, is := range ra.Issues {
+			issues = append(issues, promptIssue{
+				Code:        is.Code,
+				Description: is.Description,
+				Severity:    is.Severity.String(),
+			})
+		}
+		viols := make([]promptPolicyViolation, 0, len(ra.PolicyViolations))
+		for _, pv := range ra.PolicyViolations {
+			missing := make([]string, len(pv.Missing))
+			for i, m := range pv.Missing {
+				missing[i] = string(m)
+			}
+			viols = append(viols, promptPolicyViolation{
+				PolicyName: pv.PolicyName,
+				Pattern:    pv.Pattern,
+				Missing:    missing,
+			})
+		}
+		audits = append(audits, promptRouterAudit{
+			Router:           pr,
+			Score:            ra.Score,
+			Issues:           issues,
+			PolicyViolations: viols,
+		})
+	}
+	sort.Slice(audits, func(i, j int) bool { return audits[i].Router.Name < audits[j].Router.Name })
+
+	mws := make([]middlewareRef, 0, len(snapshot.Middlewares))
+	for name, mw := range snapshot.Middlewares {
+		mws = append(mws, middlewareRef{Name: name, Type: string(mw.Type)})
+	}
+	sort.Slice(mws, func(i, j int) bool { return mws[i].Name < mws[j].Name })
+
+	pulses := make([]promptPulseAlert, 0, len(report.PulseAlerts))
+	for _, p := range report.PulseAlerts {
+		pulses = append(pulses, promptPulseAlert{ServiceName: p.ServiceName, ErrorRate: p.ErrorRate})
+	}
+	sort.Slice(pulses, func(i, j int) bool { return pulses[i].ServiceName < pulses[j].ServiceName })
+
+	return promptPayload{
+		OverallScore: report.OverallScore,
+		Routers:      audits,
+		Middlewares:  mws,
+		PulseAlerts:  pulses,
+	}
 }
 
 // ParseResponse converts the model's raw JSON reply into the internal DTO.
