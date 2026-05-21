@@ -1139,6 +1139,7 @@ function renderIntel(r, trusted = new Set()) {
         <th class="px-4 py-2 text-left">IP</th>
         <th class="px-4 py-2 text-left">Country</th>
         <th class="px-4 py-2 text-left">City</th>
+        <th class="px-4 py-2 text-left">Org (ASN)</th>
         <th class="px-4 py-2 text-right">Hits</th>
         <th class="px-4 py-2 text-right">Err%</th>
         <th class="px-4 py-2 text-right">Top Router</th>
@@ -1154,6 +1155,7 @@ function renderIntel(r, trusted = new Set()) {
           <td class="px-4 py-2 font-mono text-white">${esc(ip.IP)}</td>
           <td class="px-4 py-2 text-gray-300">${esc(ip.CountryName || ip.CountryCode || '--')}</td>
           <td class="px-4 py-2 text-gray-400">${esc(ip.City || '')}</td>
+          <td class="px-4 py-2 text-gray-400 truncate max-w-[14rem]" title="${esc(ip.Organization || '')}${ip.ASN ? ' (AS' + ip.ASN + ')' : ''}">${esc(ip.Organization || '--')}${ip.ASN ? ` <span class="text-gray-600">AS${ip.ASN}</span>` : ''}</td>
           <td class="px-4 py-2 text-right text-gray-300">${ip.Total}</td>
           <td class="px-4 py-2 text-right ${ip.ErrorRate > 0.5 && !isTrusted ? 'text-red-400' : 'text-gray-400'}">${(ip.ErrorRate * 100).toFixed(1)}%</td>
           <td class="px-4 py-2 text-right text-gray-500 truncate max-w-xs" title="${esc(ip.TopRouter || '')}">${esc((ip.TopRouter || '').replace('@', '@\u200b'))}</td>
