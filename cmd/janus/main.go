@@ -60,6 +60,9 @@ type config struct {
 	WhitelistPath     string
 	AdminPasswordHash string
 	APIToken          string
+
+	IntelAutoBlock       bool
+	IntelAutoBlockMinErr float64 // 0.0-1.0; minimum error rate to auto-block
 }
 
 func main() {
@@ -106,6 +109,12 @@ func main() {
 	shield := firewall.NewShieldService(cfg.ShieldPath, cfg.ShieldStatePath, cfg.JanusInternalURL).
 		WithImmunity(whitelist.Contains)
 
+	// ── Shared Telegram notifier (used by both AI worker and intel service) ──
+	var notifier *telegram.Notifier
+	if cfg.TelegramToken != "" {
+		notifier = telegram.NewNotifier(cfg.TelegramToken, cfg.TelegramChatID)
+	}
+
 	// ── Optional AI worker + consult service ─────────────────────────────
 	var (
 		aiWorker   *app.AIAuditWorker
@@ -125,8 +134,7 @@ func main() {
 			aiWorker.WithStorage(historyRepo)
 			consultSvc = app.NewConsultService(llmClient, historyRepo)
 		}
-		if cfg.TelegramToken != "" {
-			notifier := telegram.NewNotifier(cfg.TelegramToken, cfg.TelegramChatID)
+		if notifier != nil {
 			aiWorker.WithNotifier(notifier, cfg.ThreatSeverityMin)
 		}
 		aiWorker.WithShield(shield, cfg.AutoBlockMin)
@@ -210,7 +218,14 @@ func main() {
 	if llmClient != nil && trafficAnalyzer != nil {
 		intelSvc = app.NewThreatIntelService(trafficAnalyzer, geoReader, llmClient).
 			WithWhitelist(whitelist).
-			WithASN(asnReader)
+			WithASN(asnReader).
+			WithShield(shield, cfg.IntelAutoBlock, cfg.IntelAutoBlockMinErr)
+		if notifier != nil {
+			intelSvc.WithNotifier(notifier)
+		}
+		if cfg.IntelAutoBlock {
+			slog.Info("Intel auto-block enabled", "min_error_rate", cfg.IntelAutoBlockMinErr)
+		}
 	}
 
 	// ── HTTP server ───────────────────────────────────────────────────────
@@ -340,8 +355,17 @@ func loadConfig() config {
 		GeoIPPath:         getEnv("JANUS_GEOIP_DB_PATH", "/app/data/GeoLite2-City.mmdb"),
 		GeoIPASNPath:      getEnv("JANUS_GEOIP_ASN_DB_PATH", "/app/data/GeoLite2-ASN.mmdb"),
 		WhitelistPath:     getEnv("JANUS_WHITELIST_PATH", "/app/data/whitelist.json"),
-		AdminPasswordHash: getEnv("JANUS_ADMIN_PASSWORD_HASH", ""),
-		APIToken:          getEnv("JANUS_API_TOKEN", ""),
+		AdminPasswordHash:    getEnv("JANUS_ADMIN_PASSWORD_HASH", ""),
+		APIToken:             getEnv("JANUS_API_TOKEN", ""),
+		IntelAutoBlockMinErr: 0.5,
+	}
+	if v := strings.ToLower(os.Getenv("JANUS_INTEL_AUTOBLOCK")); v == "true" || v == "1" || v == "yes" {
+		cfg.IntelAutoBlock = true
+	}
+	if v := os.Getenv("JANUS_INTEL_AUTOBLOCK_MIN_ERROR_RATE"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 1 {
+			cfg.IntelAutoBlockMinErr = f
+		}
 	}
 	if v := os.Getenv("JANUS_AUTO_BLOCK_MIN"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 10 {

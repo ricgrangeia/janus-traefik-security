@@ -8,9 +8,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/janus-project/janus/internal/infrastructure/firewall"
 	"github.com/janus-project/janus/internal/infrastructure/geoip"
 	"github.com/janus-project/janus/internal/infrastructure/llm"
 	"github.com/janus-project/janus/internal/infrastructure/logs"
+	"github.com/janus-project/janus/internal/infrastructure/telegram"
 )
 
 // ── Domain types ─────────────────────────────────────────────────────────────
@@ -75,6 +77,11 @@ type ThreatIntelService struct {
 	client    *llm.Client
 	whitelist *WhitelistService // optional — nil means no trusted IPs configured
 
+	shield         *firewall.ShieldService
+	autoBlock      bool
+	errorRateFloor float64
+	notifier       ThreatNotifier
+
 	mu      sync.RWMutex
 	latest  *ThreatIntelReport
 	running bool // guard against concurrent analysis
@@ -98,6 +105,29 @@ func NewThreatIntelService(
 // crawler/monitoring traffic from genuine attackers.
 func (s *ThreatIntelService) WithASN(r *geoip.ASNReader) *ThreatIntelService {
 	s.asn = r
+	return s
+}
+
+// WithShield enables automatic blocking of IPs classified HOSTILE.
+// autoBlock must be true for any blocking to occur; errorRateFloor (0.0–1.0)
+// is the minimum traffic error rate required to block — set to 0 to block
+// any HOSTILE verdict regardless of error rate.
+func (s *ThreatIntelService) WithShield(shield *firewall.ShieldService, autoBlock bool, errorRateFloor float64) *ThreatIntelService {
+	s.shield = shield
+	s.autoBlock = autoBlock
+	if errorRateFloor < 0 {
+		errorRateFloor = 0
+	}
+	if errorRateFloor > 1 {
+		errorRateFloor = 1
+	}
+	s.errorRateFloor = errorRateFloor
+	return s
+}
+
+// WithNotifier attaches a Telegram notifier for IP_AUTO_BLOCKED alerts.
+func (s *ThreatIntelService) WithNotifier(n ThreatNotifier) *ThreatIntelService {
+	s.notifier = n
 	return s
 }
 
@@ -213,7 +243,60 @@ func (s *ThreatIntelService) analyze() error {
 	s.mu.Lock()
 	s.latest = report
 	s.mu.Unlock()
+
+	if s.autoBlock && s.shield != nil {
+		s.applyAutoBlock(report)
+	}
 	return nil
+}
+
+// applyAutoBlock blocks every TopIPs entry classified HOSTILE whose error rate
+// meets the floor. The Shield's WithImmunity callback (set in main.go) already
+// rejects trusted IPs, so no extra whitelist check is needed here.
+func (s *ThreatIntelService) applyAutoBlock(r *ThreatIntelReport) {
+	blocked := 0
+	for _, ip := range r.TopIPs {
+		if ip.Classification != "HOSTILE" {
+			continue
+		}
+		if ip.ErrorRate < s.errorRateFloor {
+			continue
+		}
+		if s.shield.IsBlocked(ip.IP) {
+			continue
+		}
+		if err := s.shield.BlockIP(ip.IP); err != nil {
+			slog.Warn("Intel auto-block failed", "ip", ip.IP, "err", err)
+			continue
+		}
+		blocked++
+		slog.Warn("Intel: IP auto-blocked",
+			"ip", ip.IP, "org", ip.Organization, "country", ip.CountryCode,
+			"hits", ip.Total, "err_rate", ip.ErrorRate, "router", ip.TopRouter,
+		)
+		if s.notifier != nil && s.notifier.Enabled() {
+			payload := telegram.AutoBlockAlert{
+				IP:          ip.IP,
+				ServiceName: ip.TopRouter,
+				Severity:    10,
+				Reasoning:   ip.Reasoning,
+				CountryCode: ip.CountryCode,
+				CountryName: ip.CountryName,
+				City:        ip.City,
+				TopRouter:   ip.TopRouter,
+				Hits:        ip.Total,
+				Count4xx:    ip.Count4xx,
+				Count5xx:    ip.Count5xx,
+				ErrorRate:   ip.ErrorRate,
+			}
+			if err := s.notifier.SendAutoBlockAlert(payload); err != nil {
+				slog.Warn("Intel auto-block Telegram alert failed", "ip", ip.IP, "err", err)
+			}
+		}
+	}
+	if blocked > 0 {
+		slog.Info("Intel auto-block cycle complete", "blocked_count", blocked)
+	}
 }
 
 // MarkdownReport generates a downloadable Markdown threat report from the latest data.
