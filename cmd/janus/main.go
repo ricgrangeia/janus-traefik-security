@@ -337,7 +337,7 @@ func loadConfig() config {
 		VLLMURL:           getEnv("VLLM_API_URL", ""),
 		VLLMModel:         getEnv("VLLM_MODEL", "qwen2.5-7b-instruct"),
 		VLLMAPIKey:        getEnv("VLLM_API_KEY", ""),
-		AIAuditInterval:   60 * time.Second,
+		AIAuditInterval:   10 * time.Minute,
 		JanusEnv:          getEnv("JANUS_ENV", "production"),
 		KnownMiddlewares:  getEnv("JANUS_KNOWN_MIDDLEWARES", ""),
 		AITracePath:       getEnv("JANUS_AI_TRACE_PATH", "/logs/ai_audit_trace.json"),
