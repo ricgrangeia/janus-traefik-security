@@ -1061,16 +1061,19 @@ function switchTab(name) {
 let _lastIntelTs = null; // tracks last known GeneratedAt to detect new results
 
 async function loadIntel() {
-  const [intelRes, wlRes] = await Promise.all([
+  const [intelRes, wlRes, shieldRes] = await Promise.all([
     fetch('/api/v1/intel').catch(() => null),
     fetch('/api/v1/intel/whitelist').catch(() => null),
+    fetch('/api/v1/shield').catch(() => null),
   ]);
   if (!intelRes || intelRes.status === 204 || intelRes.status === 503) return;
   const data = await intelRes.json().catch(() => null);
   if (!data) return;
   if (data.GeneratedAt) _lastIntelTs = data.GeneratedAt;
   const wl = wlRes?.ok ? await wlRes.json().catch(() => []) : [];
-  renderIntel(data, new Set(wl));
+  const sh = shieldRes?.ok ? await shieldRes.json().catch(() => ({})) : {};
+  const blocked = new Set(sh.blocked_ips || []);
+  renderIntel(data, new Set(wl), blocked);
 }
 
 async function triggerIntelAnalysis() {
@@ -1097,7 +1100,9 @@ async function triggerIntelAnalysis() {
       if (data?.GeneratedAt && data.GeneratedAt !== prevTs) {
         _lastIntelTs = data.GeneratedAt;
         const wl = wlRes?.ok ? await wlRes.json().catch(() => []) : [];
-        renderIntel(data, new Set(wl));
+        const shRes = await fetch('/api/v1/shield').catch(() => null);
+        const sh = shRes?.ok ? await shRes.json().catch(() => ({})) : {};
+        renderIntel(data, new Set(wl), new Set(sh.blocked_ips || []));
         btn.disabled = false;
         btn.textContent = '🔍 Run Analysis';
         status.textContent = '✓ Analysis complete.';
@@ -1121,7 +1126,7 @@ function downloadIntelReport() {
   window.location.href = '/api/v1/intel/report';
 }
 
-function renderIntel(r, trusted = new Set()) {
+function renderIntel(r, trusted = new Set(), blocked = new Set()) {
   if (r.Summary) {
     document.getElementById('intel-summary').textContent = r.Summary;
     const meta = document.getElementById('intel-meta');
