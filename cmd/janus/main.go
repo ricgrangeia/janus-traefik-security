@@ -61,10 +61,31 @@ type config struct {
 	AdminPasswordHash string
 	APIToken          string
 
-	IntelAutoBlock       bool
-	IntelAutoBlockMinErr float64       // 0.0-1.0; minimum error rate to auto-block
-	IntelAutoBlockMax    int           // max IPs to auto-block per analysis run; 0 = unlimited
-	IntelInterval        time.Duration // 0 = manual-only; >0 enables periodic scheduler
+	IntelAutoBlock          bool
+	IntelAutoBlockMinErr    float64       // 0.0-1.0; minimum error rate to auto-block
+	IntelAutoBlockMax       int           // max IPs to auto-block per analysis run; 0 = unlimited
+	IntelAutoBlockMinHits   int           // minimum hit count before auto-block considers an IP
+	IntelAutoBlockASNAllow  []uint        // ASN numbers never to auto-block (CDNs etc.)
+	IntelInterval           time.Duration // 0 = manual-only; >0 enables periodic scheduler
+}
+
+// defaultASNAllowlist holds well-known CDN, anti-DDoS, and search-engine ASNs
+// that should never be auto-blocked even if the LLM mislabels them HOSTILE.
+// Conservative — we do NOT include general cloud providers (AWS EC2, GCP, Azure)
+// since attackers commonly rent there. CDN-only ASNs are inherently shared by
+// many tenants and almost always represent legitimate edge traffic.
+var defaultASNAllowlist = []uint{
+	13335, // Cloudflare
+	16625, // Akamai
+	20940, // Akamai
+	21342, // Akamai
+	30675, // Akamai
+	32787, // Akamai
+	15169, // Google (also covers GoogleBot)
+	54113, // Fastly
+	8068,  // Microsoft (covers bingbot edge)
+	13414, // Twitter / X (link previews)
+	32934, // Meta / Facebook (link previews + crawlers)
 }
 
 func main() {
@@ -222,6 +243,8 @@ func main() {
 			WithWhitelist(whitelist).
 			WithASN(asnReader).
 			WithShield(shield, cfg.IntelAutoBlock, cfg.IntelAutoBlockMinErr, cfg.IntelAutoBlockMax).
+			WithMinHits(cfg.IntelAutoBlockMinHits).
+			WithASNAllowlist(cfg.IntelAutoBlockASNAllow).
 			WithInterval(cfg.IntelInterval)
 		if notifier != nil {
 			intelSvc.WithNotifier(notifier)
@@ -361,10 +384,12 @@ func loadConfig() config {
 		GeoIPPath:         getEnv("JANUS_GEOIP_DB_PATH", "/app/data/GeoLite2-City.mmdb"),
 		GeoIPASNPath:      getEnv("JANUS_GEOIP_ASN_DB_PATH", "/app/data/GeoLite2-ASN.mmdb"),
 		WhitelistPath:     getEnv("JANUS_WHITELIST_PATH", "/app/data/whitelist.json"),
-		AdminPasswordHash:    getEnv("JANUS_ADMIN_PASSWORD_HASH", ""),
-		APIToken:             getEnv("JANUS_API_TOKEN", ""),
-		IntelAutoBlockMinErr: 0.5,
-		IntelAutoBlockMax:    3,
+		AdminPasswordHash:      getEnv("JANUS_ADMIN_PASSWORD_HASH", ""),
+		APIToken:               getEnv("JANUS_API_TOKEN", ""),
+		IntelAutoBlockMinErr:   0.8, // bumped from 0.5 — the LLM's real attackers showed >0.9 error rates
+		IntelAutoBlockMax:      3,
+		IntelAutoBlockMinHits:  20,
+		IntelAutoBlockASNAllow: append([]uint(nil), defaultASNAllowlist...),
 	}
 	if v := strings.ToLower(os.Getenv("JANUS_INTEL_AUTOBLOCK")); v == "true" || v == "1" || v == "yes" {
 		cfg.IntelAutoBlock = true
@@ -382,6 +407,23 @@ func loadConfig() config {
 	if v := os.Getenv("JANUS_INTEL_INTERVAL"); v != "" {
 		if secs, err := strconv.Atoi(v); err == nil && secs >= 60 {
 			cfg.IntelInterval = time.Duration(secs) * time.Second
+		}
+	}
+	if v := os.Getenv("JANUS_INTEL_AUTOBLOCK_MIN_HITS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.IntelAutoBlockMinHits = n
+		}
+	}
+	// Additive: appends to defaultASNAllowlist rather than replacing it.
+	if v := os.Getenv("JANUS_INTEL_AUTOBLOCK_ASN_ALLOWLIST"); v != "" {
+		for _, part := range strings.Split(v, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			if n, err := strconv.ParseUint(part, 10, 32); err == nil {
+				cfg.IntelAutoBlockASNAllow = append(cfg.IntelAutoBlockASNAllow, uint(n))
+			}
 		}
 	}
 	if v := os.Getenv("JANUS_AUTO_BLOCK_MIN"); v != "" {

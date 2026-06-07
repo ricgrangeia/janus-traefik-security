@@ -82,6 +82,8 @@ type ThreatIntelService struct {
 	autoBlock      bool
 	errorRateFloor float64
 	maxPerRun      int // cap on auto-blocks per analysis cycle; 0 = unlimited
+	minHits        int // minimum hit count required before an IP can be auto-blocked
+	asnAllowlist   map[uint]bool // ASN numbers never to auto-block regardless of LLM verdict
 	notifier       ThreatNotifier
 	interval       time.Duration // 0 = scheduler disabled (manual-only via /api/v1/intel/analyze)
 
@@ -137,6 +139,29 @@ func (s *ThreatIntelService) WithShield(shield *firewall.ShieldService, autoBloc
 // WithNotifier attaches a Telegram notifier for IP_AUTO_BLOCKED alerts.
 func (s *ThreatIntelService) WithNotifier(n ThreatNotifier) *ThreatIntelService {
 	s.notifier = n
+	return s
+}
+
+// WithMinHits sets the minimum hit count an IP must have before auto-block
+// will consider it. Prevents single-request anomalies from triggering a ban.
+func (s *ThreatIntelService) WithMinHits(n int) *ThreatIntelService {
+	if n < 0 {
+		n = 0
+	}
+	s.minHits = n
+	return s
+}
+
+// WithASNAllowlist sets the list of ASNs that are never auto-blocked, even on
+// a HOSTILE verdict. Used to protect known CDNs and search-engine crawlers
+// from LLM mis-classification.
+func (s *ThreatIntelService) WithASNAllowlist(asns []uint) *ThreatIntelService {
+	s.asnAllowlist = make(map[uint]bool, len(asns))
+	for _, a := range asns {
+		if a > 0 {
+			s.asnAllowlist[a] = true
+		}
+	}
 	return s
 }
 
@@ -303,6 +328,15 @@ func (s *ThreatIntelService) applyAutoBlock(r *ThreatIntelReport) {
 			continue
 		}
 		if ip.ErrorRate < s.errorRateFloor {
+			continue
+		}
+		if ip.Total < s.minHits {
+			slog.Debug("Intel auto-block skipped — below hit-count gate", "ip", ip.IP, "hits", ip.Total, "min", s.minHits)
+			continue
+		}
+		if ip.ASN != 0 && s.asnAllowlist[ip.ASN] {
+			slog.Info("Intel auto-block skipped — ASN in allowlist (CDN/known-good)",
+				"ip", ip.IP, "asn", ip.ASN, "org", ip.Organization, "verdict", ip.Classification)
 			continue
 		}
 		if s.shield.IsBlocked(ip.IP) {
