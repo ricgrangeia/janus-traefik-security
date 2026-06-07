@@ -123,12 +123,19 @@ func (t *AccessLogTailer) poll() {
 	}
 	defer f.Close()
 
-	// Detect log rotation: file smaller than remembered offset → reset.
+	// Detect log rotation: file smaller than remembered offset → seek to end of new file.
 	info, _ := f.Stat()
 	t.mu.Lock()
 	if info != nil && info.Size() < t.offset {
-		slog.Info("access-log tailer: rotation detected, resetting")
-		t.offset = 0
+		slog.Info("access-log tailer: rotation detected, skipping to end of new file", "size", info.Size())
+		t.offset = info.Size()
+	}
+	// Cold start: skip historical log entries to avoid OOM when the existing
+	// file is hundreds of MB. Janus only needs new entries from the moment it
+	// starts; the ban-review worker uses the last 30 min only.
+	if t.offset == 0 && info != nil && info.Size() > 0 {
+		slog.Info("access-log tailer: cold start — skipping historical log", "size_bytes", info.Size())
+		t.offset = info.Size()
 	}
 	offset := t.offset
 	t.mu.Unlock()

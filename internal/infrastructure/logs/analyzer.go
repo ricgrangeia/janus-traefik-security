@@ -246,7 +246,14 @@ func (a *TrafficAnalyzer) poll() {
 	info, _ := f.Stat()
 	a.mu.Lock()
 	if info != nil && info.Size() < a.offset {
-		a.offset = 0
+		slog.Info("traffic analyzer: rotation detected, skipping to end of new file", "size", info.Size())
+		a.offset = info.Size()
+	}
+	// Cold start: skip historical log entries to avoid OOM on huge files.
+	// Janus only retains the last 1h of stats; older entries would be purged anyway.
+	if a.offset == 0 && info != nil && info.Size() > 0 {
+		slog.Info("traffic analyzer: cold start — skipping historical log", "size_bytes", info.Size())
+		a.offset = info.Size()
 	}
 	offset := a.offset
 	a.mu.Unlock()
