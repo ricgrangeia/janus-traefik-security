@@ -1151,7 +1151,15 @@ function renderIntel(r, trusted = new Set(), blocked = new Set()) {
         <th class="px-4 py-2 text-right">Verdict</th>
         <th class="px-4 py-2 text-right">Actions</th>
       </tr></thead>
-      <tbody>${r.TopIPs.map(ip => {
+      <tbody>${[...r.TopIPs].sort((a, b) => {
+        // Sort by absolute bad-request count (4xx+5xx) desc — surfaces attackers
+        // who have BOTH high error rate AND high hits at the top. Tiebreak by
+        // total hits desc.
+        const aBad = (a.Count4xx || 0) + (a.Count5xx || 0);
+        const bBad = (b.Count4xx || 0) + (b.Count5xx || 0);
+        if (bBad !== aBad) return bBad - aBad;
+        return (b.Total || 0) - (a.Total || 0);
+      }).map(ip => {
         const isTrusted = trusted.has(ip.IP);
         const isBlocked = blocked.has(ip.IP);
         let verdict, verdictClass, rowClass, ipClass;

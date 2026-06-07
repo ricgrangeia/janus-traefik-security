@@ -25,6 +25,7 @@ type ThreatNotifier interface {
 	Enabled() bool
 	SendThreatAlert(serviceName, classification, reasoning, fix string) error
 	SendAutoBlockAlert(a telegram.AutoBlockAlert) error
+	SendUnblockAlert(a telegram.UnblockAlert) error
 }
 
 // IPContext is enrichment info an optional IPEnricher can provide about an IP.

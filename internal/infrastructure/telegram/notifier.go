@@ -47,6 +47,27 @@ type AutoBlockAlert struct {
 	ErrorRate   float64 // 0.0-1.0
 }
 
+// UnblockAlert carries the payload for IP_UNBLOCKED notifications.
+type UnblockAlert struct {
+	IP     string
+	Source string // "ai-review" | "manual" | "intel"
+	Reason string // optional explanation
+}
+
+// SendUnblockAlert sends a concise IP_UNBLOCKED alert.
+func (n *Notifier) SendUnblockAlert(a UnblockAlert) error {
+	text := fmt.Sprintf(
+		"✅ *IP UNBLOCKED*\n"+
+			"IP: `%s`\n"+
+			"Source: %s",
+		a.IP, a.Source,
+	)
+	if a.Reason != "" {
+		text += fmt.Sprintf("\nReason: \"%s\"", a.Reason)
+	}
+	return n.send(text)
+}
+
 // SendAutoBlockAlert sends a rich IP_BANNED alert with geo + traffic enrichment.
 func (n *Notifier) SendAutoBlockAlert(a AutoBlockAlert) error {
 	loc := "unknown"

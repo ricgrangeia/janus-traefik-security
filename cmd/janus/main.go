@@ -234,6 +234,9 @@ func main() {
 	var reviewWorker *app.BanReviewWorker
 	if llmClient != nil && logTailer != nil {
 		reviewWorker = app.NewBanReviewWorker(shield, logTailer, llmClient, 30*time.Minute)
+		if notifier != nil {
+			reviewWorker.WithNotifier(notifier)
+		}
 	}
 
 	// ── Threat intelligence ──────────────────────────────────────────────
@@ -284,6 +287,7 @@ func main() {
 		Policies:        policies,
 		StaticFS:        sub,
 		Guard:           guard,
+		Notifier:        notifier,
 		AlertThreshold:  cfg.AlertThreshold,
 		AIEnabled:       cfg.VLLMEnabled,
 	}

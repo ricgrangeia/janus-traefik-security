@@ -13,6 +13,7 @@ import (
 	"github.com/janus-project/janus/internal/infrastructure/firewall"
 	"github.com/janus-project/janus/internal/infrastructure/llm"
 	"github.com/janus-project/janus/internal/infrastructure/logs"
+	"github.com/janus-project/janus/internal/infrastructure/telegram"
 )
 
 const (
@@ -46,9 +47,17 @@ type BanReviewWorker struct {
 	tailer   *logs.AccessLogTailer
 	client   *llm.Client
 	interval time.Duration
+	notifier ThreatNotifier // optional — for IP_UNBLOCKED alerts
 
 	mu       sync.RWMutex
 	verdicts map[string]IPVerdict // IP → latest verdict
+}
+
+// WithNotifier attaches a Telegram notifier for IP_UNBLOCKED alerts when the
+// AI verdict is B (auto-unblock).
+func (w *BanReviewWorker) WithNotifier(n ThreatNotifier) *BanReviewWorker {
+	w.notifier = n
+	return w
 }
 
 // NewBanReviewWorker creates a worker. All arguments are required.
@@ -177,6 +186,13 @@ func (w *BanReviewWorker) reviewOne(ip string) {
 		w.mu.Lock()
 		delete(w.verdicts, ip)
 		w.mu.Unlock()
+		if w.notifier != nil && w.notifier.Enabled() {
+			_ = w.notifier.SendUnblockAlert(telegram.UnblockAlert{
+				IP:     ip,
+				Source: "ai-review",
+				Reason: dto.Reasoning,
+			})
+		}
 	}
 }
 

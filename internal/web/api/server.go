@@ -17,6 +17,7 @@ import (
 	"github.com/janus-project/janus/internal/infrastructure/firewall"
 	janusLogs "github.com/janus-project/janus/internal/infrastructure/logs"
 	"github.com/janus-project/janus/internal/infrastructure/storage"
+	"github.com/janus-project/janus/internal/infrastructure/telegram"
 	traefikinfra "github.com/janus-project/janus/internal/infrastructure/traefik"
 	"github.com/janus-project/janus/internal/pulse"
 	"github.com/janus-project/janus/internal/web/auth"
@@ -40,6 +41,7 @@ type Server struct {
 	Policies        []domain.Policy
 	StaticFS        fs.FS
 	Guard           *auth.Guard
+	Notifier        *telegram.Notifier // optional — for IP_UNBLOCKED alerts on manual unblock
 
 	AlertThreshold float64
 	AIEnabled      bool
@@ -357,6 +359,9 @@ func (s *Server) handleShieldUnblock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("Shield: IP unblocked via API", "ip", ip)
+	if s.Notifier != nil && s.Notifier.Enabled() {
+		_ = s.Notifier.SendUnblockAlert(telegram.UnblockAlert{IP: ip, Source: "manual"})
+	}
 	writeJSON(w, 0, map[string]string{"status": "unblocked", "ip": ip})
 }
 
