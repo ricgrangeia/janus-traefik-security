@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -82,6 +83,7 @@ type ThreatIntelService struct {
 	errorRateFloor float64
 	maxPerRun      int // cap on auto-blocks per analysis cycle; 0 = unlimited
 	notifier       ThreatNotifier
+	interval       time.Duration // 0 = scheduler disabled (manual-only via /api/v1/intel/analyze)
 
 	mu      sync.RWMutex
 	latest  *ThreatIntelReport
@@ -136,6 +138,36 @@ func (s *ThreatIntelService) WithShield(shield *firewall.ShieldService, autoBloc
 func (s *ThreatIntelService) WithNotifier(n ThreatNotifier) *ThreatIntelService {
 	s.notifier = n
 	return s
+}
+
+// WithInterval enables the periodic scheduler. When interval > 0, Run() will
+// trigger an analysis on every tick. 0 disables the scheduler (default).
+func (s *ThreatIntelService) WithInterval(d time.Duration) *ThreatIntelService {
+	s.interval = d
+	return s
+}
+
+// Run starts the periodic analysis scheduler. Blocks until ctx is cancelled.
+// No-op when the interval is 0 (manual-only mode). The running-guard inside
+// AnalyzeAsync ensures a tick fired during an in-flight cycle is dropped.
+func (s *ThreatIntelService) Run(ctx context.Context) {
+	if s.interval <= 0 {
+		slog.Info("threat intel scheduler disabled — set JANUS_INTEL_INTERVAL to enable")
+		<-ctx.Done()
+		return
+	}
+	slog.Info("threat intel scheduler started", "interval", s.interval)
+	tk := time.NewTicker(s.interval)
+	defer tk.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("threat intel scheduler stopped")
+			return
+		case <-tk.C:
+			s.AnalyzeAsync()
+		}
+	}
 }
 
 // WithWhitelist attaches a trusted-IP whitelist. Whitelisted IPs are passed to

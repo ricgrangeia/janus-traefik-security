@@ -62,8 +62,9 @@ type config struct {
 	APIToken          string
 
 	IntelAutoBlock       bool
-	IntelAutoBlockMinErr float64 // 0.0-1.0; minimum error rate to auto-block
-	IntelAutoBlockMax    int     // max IPs to auto-block per analysis run; 0 = unlimited
+	IntelAutoBlockMinErr float64       // 0.0-1.0; minimum error rate to auto-block
+	IntelAutoBlockMax    int           // max IPs to auto-block per analysis run; 0 = unlimited
+	IntelInterval        time.Duration // 0 = manual-only; >0 enables periodic scheduler
 }
 
 func main() {
@@ -220,7 +221,8 @@ func main() {
 		intelSvc = app.NewThreatIntelService(trafficAnalyzer, geoReader, llmClient).
 			WithWhitelist(whitelist).
 			WithASN(asnReader).
-			WithShield(shield, cfg.IntelAutoBlock, cfg.IntelAutoBlockMinErr, cfg.IntelAutoBlockMax)
+			WithShield(shield, cfg.IntelAutoBlock, cfg.IntelAutoBlockMinErr, cfg.IntelAutoBlockMax).
+			WithInterval(cfg.IntelInterval)
 		if notifier != nil {
 			intelSvc.WithNotifier(notifier)
 		}
@@ -291,6 +293,9 @@ func main() {
 	}
 	if reviewWorker != nil {
 		startWorker("ban-review", reviewWorker.Run)
+	}
+	if intelSvc != nil {
+		startWorker("threat-intel", intelSvc.Run)
 	}
 
 	addr := ":" + cfg.Port
@@ -372,6 +377,11 @@ func loadConfig() config {
 	if v := os.Getenv("JANUS_INTEL_AUTOBLOCK_MAX_PER_RUN"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 && n <= 100 {
 			cfg.IntelAutoBlockMax = n
+		}
+	}
+	if v := os.Getenv("JANUS_INTEL_INTERVAL"); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs >= 60 {
+			cfg.IntelInterval = time.Duration(secs) * time.Second
 		}
 	}
 	if v := os.Getenv("JANUS_AUTO_BLOCK_MIN"); v != "" {
