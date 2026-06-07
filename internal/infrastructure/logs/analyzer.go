@@ -61,11 +61,12 @@ type analyzerEntry struct {
 }
 
 const (
-	retentionPeriod      = time.Hour
-	maxErrorSamplesPerIP = 100 // ring-buffer cap
-	maxPathsPerIP        = 256 // bounded map cap — new keys ignored past this
-	maxUserAgentsPerIP   = 64
-	maxUserAgentLen      = 120 // truncate to avoid memory blowup from long UAs
+	retentionPeriod          = time.Hour
+	maxErrorSamplesPerIP     = 100  // ring-buffer cap
+	maxPathsPerIP            = 64   // bounded map cap — new keys ignored past this
+	maxUserAgentsPerIP       = 16
+	maxUserAgentLen          = 120  // truncate to avoid memory blowup from long UAs
+	analyzerMaxTrackedIPs    = 5000 // hard cap; LRU eviction beyond this protects against bot-scan memory blow-up
 )
 
 type ipCounter struct {
@@ -352,5 +353,21 @@ func (a *TrafficAnalyzer) purgeOld() {
 		if c.lastSeen.Before(cutoff) {
 			delete(a.counts, ip)
 		}
+	}
+	if len(a.counts) > analyzerMaxTrackedIPs {
+		type ipAge struct {
+			ip   string
+			last time.Time
+		}
+		ages := make([]ipAge, 0, len(a.counts))
+		for ip, c := range a.counts {
+			ages = append(ages, ipAge{ip, c.lastSeen})
+		}
+		sort.Slice(ages, func(i, j int) bool { return ages[i].last.Before(ages[j].last) })
+		excess := len(a.counts) - analyzerMaxTrackedIPs
+		for i := 0; i < excess; i++ {
+			delete(a.counts, ages[i].ip)
+		}
+		slog.Info("traffic analyzer: capped tracked IPs", "evicted", excess, "tracked", len(a.counts))
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"sort"
 	"sync"
 	"time"
 )
@@ -33,7 +34,12 @@ type traefikEntry struct {
 	Time             string `json:"time"` // fallback field
 }
 
-const maxHitsPerIP = 1000 // ring-buffer cap per IP
+const (
+	maxHitsPerIP    = 1000           // ring-buffer cap per IP
+	maxTrackedIPs   = 5000           // hard cap on number of IPs in the hits map — protects against unbounded memory growth under bot-scan
+	tailerRetention = 2 * time.Hour  // drop IPs whose newest hit is older than this on each poll
+	tailerPurgeFreq = 5 * time.Minute // run the purge sweep at most this often
+)
 
 // AccessLogTailer reads Traefik's JSON-format access log on a polling interval,
 // storing 403 entries per source IP. Safe for concurrent use.
@@ -41,9 +47,10 @@ type AccessLogTailer struct {
 	path     string
 	interval time.Duration
 
-	mu     sync.RWMutex
-	hits   map[string][]HitRecord // IP → bounded slice, newest last
-	offset int64
+	mu        sync.RWMutex
+	hits      map[string][]HitRecord // IP → bounded slice, newest last
+	offset    int64
+	lastPurge time.Time
 }
 
 // NewAccessLogTailer returns a tailer for the JSON access log at path,
@@ -171,7 +178,54 @@ func (t *AccessLogTailer) poll() {
 		}
 		t.hits[a.ip] = rec
 	}
+	if time.Since(t.lastPurge) >= tailerPurgeFreq {
+		t.purgeLocked()
+		t.lastPurge = time.Now()
+	}
 	t.mu.Unlock()
+}
+
+// purgeLocked is the memory guard for the hits map. Caller must hold t.mu.
+// 1. Drop any IP whose most recent hit is older than tailerRetention.
+// 2. If still above maxTrackedIPs, evict the oldest-last-hit entries until
+//    under cap. This prevents unbounded memory growth during sustained
+//    bot-scan traffic (the original cause of the 6.9 GB RES incident).
+func (t *AccessLogTailer) purgeLocked() {
+	if len(t.hits) == 0 {
+		return
+	}
+	cutoff := time.Now().UTC().Add(-tailerRetention)
+	dropped := 0
+	for ip, recs := range t.hits {
+		if len(recs) == 0 || recs[len(recs)-1].Time.Before(cutoff) {
+			delete(t.hits, ip)
+			dropped++
+		}
+	}
+	if len(t.hits) > maxTrackedIPs {
+		// LRU eviction by newest-hit time.
+		type ipAge struct {
+			ip   string
+			last time.Time
+		}
+		ages := make([]ipAge, 0, len(t.hits))
+		for ip, recs := range t.hits {
+			last := time.Time{}
+			if len(recs) > 0 {
+				last = recs[len(recs)-1].Time
+			}
+			ages = append(ages, ipAge{ip, last})
+		}
+		sort.Slice(ages, func(i, j int) bool { return ages[i].last.Before(ages[j].last) })
+		excess := len(t.hits) - maxTrackedIPs
+		for i := 0; i < excess; i++ {
+			delete(t.hits, ages[i].ip)
+		}
+		dropped += excess
+	}
+	if dropped > 0 {
+		slog.Info("access-log tailer: purged stale IPs", "dropped", dropped, "tracked", len(t.hits))
+	}
 }
 
 func extractIP(addr string) string {
