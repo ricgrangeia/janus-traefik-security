@@ -80,6 +80,7 @@ type ThreatIntelService struct {
 	shield         *firewall.ShieldService
 	autoBlock      bool
 	errorRateFloor float64
+	maxPerRun      int // cap on auto-blocks per analysis cycle; 0 = unlimited
 	notifier       ThreatNotifier
 
 	mu      sync.RWMutex
@@ -111,8 +112,10 @@ func (s *ThreatIntelService) WithASN(r *geoip.ASNReader) *ThreatIntelService {
 // WithShield enables automatic blocking of IPs classified HOSTILE.
 // autoBlock must be true for any blocking to occur; errorRateFloor (0.0–1.0)
 // is the minimum traffic error rate required to block — set to 0 to block
-// any HOSTILE verdict regardless of error rate.
-func (s *ThreatIntelService) WithShield(shield *firewall.ShieldService, autoBlock bool, errorRateFloor float64) *ThreatIntelService {
+// any HOSTILE verdict regardless of error rate. maxPerRun caps how many IPs
+// can be blocked in one analysis cycle (0 = unlimited) — protects the
+// downstream ban-review worker from sudden bulk additions.
+func (s *ThreatIntelService) WithShield(shield *firewall.ShieldService, autoBlock bool, errorRateFloor float64, maxPerRun int) *ThreatIntelService {
 	s.shield = shield
 	s.autoBlock = autoBlock
 	if errorRateFloor < 0 {
@@ -122,6 +125,10 @@ func (s *ThreatIntelService) WithShield(shield *firewall.ShieldService, autoBloc
 		errorRateFloor = 1
 	}
 	s.errorRateFloor = errorRateFloor
+	if maxPerRun < 0 {
+		maxPerRun = 0
+	}
+	s.maxPerRun = maxPerRun
 	return s
 }
 
@@ -256,6 +263,10 @@ func (s *ThreatIntelService) analyze() error {
 func (s *ThreatIntelService) applyAutoBlock(r *ThreatIntelReport) {
 	blocked := 0
 	for _, ip := range r.TopIPs {
+		if s.maxPerRun > 0 && blocked >= s.maxPerRun {
+			slog.Info("Intel auto-block cap reached, deferring remaining HOSTILE IPs to next run", "cap", s.maxPerRun)
+			break
+		}
 		if ip.Classification != "HOSTILE" {
 			continue
 		}

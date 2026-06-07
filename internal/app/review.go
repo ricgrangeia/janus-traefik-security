@@ -16,9 +16,11 @@ import (
 )
 
 const (
-	reviewWindowMins = 30  // analyse last N minutes of post-ban activity
-	reviewBuckets    = 6   // sparkline buckets (one per 5 minutes)
-	reviewBucketSecs = 300 // 5 minutes per bucket
+	reviewWindowMins   = 30              // analyse last N minutes of post-ban activity
+	reviewBuckets      = 6               // sparkline buckets (one per 5 minutes)
+	reviewBucketSecs   = 300             // 5 minutes per bucket
+	reviewMinAge       = 2 * time.Hour   // skip re-review if last verdict is younger than this
+	reviewBetweenCalls = 25 * time.Second // sleep between per-IP LLM calls to throttle vLLM load
 )
 
 // IPVerdict is the result of one AI behavioural review for a banned IP.
@@ -76,7 +78,7 @@ func (w *BanReviewWorker) Run(ctx context.Context) {
 			slog.Info("ban review worker stopped")
 			return
 		case <-tk.C:
-			w.reviewAll()
+			w.reviewAll(ctx)
 		}
 	}
 }
@@ -89,13 +91,40 @@ func (w *BanReviewWorker) GetVerdict(ip string) (IPVerdict, bool) {
 	return v, ok
 }
 
-func (w *BanReviewWorker) reviewAll() {
+func (w *BanReviewWorker) reviewAll(ctx context.Context) {
 	ips := w.shield.ListBlocked()
 	if len(ips) == 0 {
 		return
 	}
-	slog.Info("ban review: reviewing banned IPs", "count", len(ips))
+
+	// Filter to IPs not reviewed within reviewMinAge — most banned IPs go silent
+	// after the block, so re-asking the LLM every 30min is pure waste.
+	due := make([]string, 0, len(ips))
+	w.mu.RLock()
 	for _, ip := range ips {
+		v, ok := w.verdicts[ip]
+		if !ok || time.Since(v.ReviewedAt) >= reviewMinAge {
+			due = append(due, ip)
+		}
+	}
+	w.mu.RUnlock()
+
+	if len(due) == 0 {
+		slog.Debug("ban review: nothing due", "blocked_count", len(ips))
+		return
+	}
+	skipped := len(ips) - len(due)
+	slog.Info("ban review: reviewing due IPs", "due", len(due), "skipped_recent", skipped)
+
+	// Throttle between LLM calls so a long blocklist does not saturate vLLM.
+	for i, ip := range due {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(reviewBetweenCalls):
+			}
+		}
 		w.reviewOne(ip)
 	}
 }
