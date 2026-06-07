@@ -54,7 +54,23 @@ services:
       # Path to MaxMind GeoLite2-City.mmdb for IP geo-enrichment (optional).
       JANUS_GEOIP_DB_PATH: ${JANUS_GEOIP_DB_PATH:-/app/data/GeoLite2-City.mmdb}
       JANUS_GEOIP_ASN_DB_PATH: ${JANUS_GEOIP_ASN_DB_PATH:-/app/data/GeoLite2-ASN.mmdb}
+      # Trusted-IP whitelist (shield immunity source).
+      JANUS_WHITELIST_PATH: ${JANUS_WHITELIST_PATH:-/app/data/whitelist.json}
+      # Dashboard auth — generate hash with: docker compose run --rm janus hash-password
       JANUS_ADMIN_PASSWORD_HASH: ${JANUS_ADMIN_PASSWORD_HASH}
+      # Optional bearer token for scripted API access (Authorization: Bearer ...).
+      JANUS_API_TOKEN: ${JANUS_API_TOKEN:-}
+      # Threat-Intel scheduler. 0 = manual-only (default). 480 = run every 8 min.
+      JANUS_INTEL_INTERVAL: ${JANUS_INTEL_INTERVAL:-0}
+      # Auto-block IPs that the Intelligence cycle labels HOSTILE.
+      JANUS_INTEL_AUTOBLOCK: ${JANUS_INTEL_AUTOBLOCK:-false}
+      # Safety gates for Intel auto-block.
+      JANUS_INTEL_AUTOBLOCK_MIN_ERROR_RATE: ${JANUS_INTEL_AUTOBLOCK_MIN_ERROR_RATE:-0.8}
+      JANUS_INTEL_AUTOBLOCK_MIN_HITS: ${JANUS_INTEL_AUTOBLOCK_MIN_HITS:-20}
+      JANUS_INTEL_AUTOBLOCK_MAX_PER_RUN: ${JANUS_INTEL_AUTOBLOCK_MAX_PER_RUN:-3}
+      # Comma-separated additional ASN numbers never to auto-block. Appended to
+      # the built-in CDN/anti-DDoS allowlist (Cloudflare, Akamai, Google, etc.).
+      JANUS_INTEL_AUTOBLOCK_ASN_ALLOWLIST: ${JANUS_INTEL_AUTOBLOCK_ASN_ALLOWLIST:-}
     volumes:
       - /opt/janus/logs:/logs
       - /opt/janus/configs:/configs
