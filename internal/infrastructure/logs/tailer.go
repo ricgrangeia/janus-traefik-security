@@ -35,8 +35,8 @@ type traefikEntry struct {
 }
 
 const (
-	maxHitsPerIP    = 1000           // ring-buffer cap per IP
-	maxTrackedIPs   = 5000           // hard cap on number of IPs in the hits map — protects against unbounded memory growth under bot-scan
+	maxHitsPerIP    = 100            // ring-buffer cap per IP — 100 is enough for the ban-review LLM to reason about post-ban behaviour
+	maxTrackedIPs   = 1000           // hard cap on number of IPs in the hits map — protects against unbounded memory growth under bot-scan
 	tailerRetention = 2 * time.Hour  // drop IPs whose newest hit is older than this on each poll
 	tailerPurgeFreq = 5 * time.Minute // run the purge sweep at most this often
 )

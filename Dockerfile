@@ -22,4 +22,10 @@ COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
 EXPOSE 9090
 
+# Soft memory ceiling — tells Go's GC to keep heap under ~512 MiB.
+# Combined with the tracked-IP caps in TrafficAnalyzer/AccessLogTailer this
+# keeps RES well under 1 GB even under sustained bot-scan traffic.
+# Override at runtime via -e GOMEMLIMIT=... if you need more headroom.
+ENV GOMEMLIMIT=512MiB
+
 ENTRYPOINT ["/janus"]

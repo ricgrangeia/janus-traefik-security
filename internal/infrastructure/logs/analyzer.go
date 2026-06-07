@@ -62,11 +62,11 @@ type analyzerEntry struct {
 
 const (
 	retentionPeriod          = time.Hour
-	maxErrorSamplesPerIP     = 100  // ring-buffer cap
+	maxErrorSamplesPerIP     = 50   // ring-buffer cap
 	maxPathsPerIP            = 64   // bounded map cap — new keys ignored past this
 	maxUserAgentsPerIP       = 16
 	maxUserAgentLen          = 120  // truncate to avoid memory blowup from long UAs
-	analyzerMaxTrackedIPs    = 5000 // hard cap; LRU eviction beyond this protects against bot-scan memory blow-up
+	analyzerMaxTrackedIPs    = 1000 // hard cap; LRU eviction beyond this protects against bot-scan memory blow-up
 )
 
 type ipCounter struct {
