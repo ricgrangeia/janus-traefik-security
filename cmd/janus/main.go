@@ -67,6 +67,9 @@ type config struct {
 	IntelAutoBlockMinHits   int           // minimum hit count before auto-block considers an IP
 	IntelAutoBlockASNAllow  []uint        // ASN numbers never to auto-block (CDNs etc.)
 	IntelInterval           time.Duration // 0 = manual-only; >0 enables periodic scheduler
+	BlockBaseMin            int           // first auto-block duration (minutes)
+	BlockStepMin            int           // extra minutes added per repeat offense in same 24h
+	BlockMaxMin             int           // hard cap on a single auto-block duration
 }
 
 // defaultASNAllowlist holds well-known CDN, anti-DDoS, and search-engine ASNs
@@ -130,7 +133,12 @@ func main() {
 
 	// ── Shield ────────────────────────────────────────────────────────────
 	shield := firewall.NewShieldService(cfg.ShieldPath, cfg.ShieldStatePath, cfg.JanusInternalURL).
-		WithImmunity(whitelist.Contains)
+		WithImmunity(whitelist.Contains).
+		WithBlockConfig(firewall.BlockConfig{
+			BaseMin: cfg.BlockBaseMin,
+			StepMin: cfg.BlockStepMin,
+			MaxMin:  cfg.BlockMaxMin,
+		})
 
 	// ── Shared Telegram notifier (used by both AI worker and intel service) ──
 	var notifier *telegram.Notifier
@@ -239,6 +247,12 @@ func main() {
 		}
 	}
 
+	// ── Block expiry worker — releases auto-blocks when their duration elapses ──
+	expiryWorker := app.NewBlockExpiryWorker(shield, time.Minute)
+	if notifier != nil {
+		expiryWorker.WithNotifier(notifier)
+	}
+
 	// ── Threat intelligence ──────────────────────────────────────────────
 	var intelSvc *app.ThreatIntelService
 	if llmClient != nil && trafficAnalyzer != nil {
@@ -324,6 +338,7 @@ func main() {
 	if intelSvc != nil {
 		startWorker("threat-intel", intelSvc.Run)
 	}
+	startWorker("block-expiry", expiryWorker.Run)
 
 	addr := ":" + cfg.Port
 	httpSrv := &http.Server{
@@ -394,6 +409,24 @@ func loadConfig() config {
 		IntelAutoBlockMax:      3,
 		IntelAutoBlockMinHits:  20,
 		IntelAutoBlockASNAllow: append([]uint(nil), defaultASNAllowlist...),
+		BlockBaseMin:           30,
+		BlockStepMin:           30,
+		BlockMaxMin:            24 * 60,
+	}
+	if v := os.Getenv("JANUS_BLOCK_BASE_MIN"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.BlockBaseMin = n
+		}
+	}
+	if v := os.Getenv("JANUS_BLOCK_STEP_MIN"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.BlockStepMin = n
+		}
+	}
+	if v := os.Getenv("JANUS_BLOCK_MAX_MIN"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.BlockMaxMin = n
+		}
 	}
 	if v := strings.ToLower(os.Getenv("JANUS_INTEL_AUTOBLOCK")); v == "true" || v == "1" || v == "yes" {
 		cfg.IntelAutoBlock = true

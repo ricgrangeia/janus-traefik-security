@@ -328,6 +328,7 @@ func (s *Server) handleShieldGet(w http.ResponseWriter, _ *http.Request) {
 
 	writeJSON(w, 0, map[string]any{
 		"blocked_ips":     ips,
+		"blocked_entries": s.Shield.ListBlockedDetailed(), // rich entries with BlockedAt + ExpiresAt
 		"activity":        activity,
 		"admin_whitelist": adminList,
 		"immune_ips":      immuneIPs,

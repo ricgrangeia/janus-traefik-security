@@ -36,6 +36,10 @@ type AutoBlockAlert struct {
 	Severity    int // 0-10
 	Reasoning   string
 
+	// Block duration metadata (zero-valued when permanent / unknown).
+	DurationMin  int // applied duration in minutes; 0 = permanent
+	OffenseCount int // 1 = first block of this IP in last 24h, 2 = second, ...
+
 	// Enrichment — any field may be zero-valued when unavailable.
 	CountryCode string // "US", "--"
 	CountryName string
@@ -91,6 +95,14 @@ func (n *Notifier) SendAutoBlockAlert(a AutoBlockAlert) error {
 		router = a.ServiceName
 	}
 
+	duration := "permanent"
+	if a.DurationMin > 0 {
+		if a.OffenseCount > 1 {
+			duration = fmt.Sprintf("%d min (offense #%d in 24h)", a.DurationMin, a.OffenseCount)
+		} else {
+			duration = fmt.Sprintf("%d min (1st offense in 24h)", a.DurationMin)
+		}
+	}
 	text := fmt.Sprintf(
 		"🚫 *IP AUTO-BLOCKED*\n"+
 			"IP: `%s`\n"+
@@ -98,9 +110,10 @@ func (n *Notifier) SendAutoBlockAlert(a AutoBlockAlert) error {
 			"Top Router: `%s`\n"+
 			"Traffic: %s\n"+
 			"AI Severity: *%d/10*\n"+
+			"Duration: %s\n"+
 			"Reasoning: \"%s\"\n"+
 			"_Review and unblock via the Janus Shield tab if this was a false positive._",
-		a.IP, loc, router, traffic, a.Severity, a.Reasoning,
+		a.IP, loc, router, traffic, a.Severity, duration, a.Reasoning,
 	)
 	return n.send(text)
 }

@@ -342,7 +342,8 @@ func (s *ThreatIntelService) applyAutoBlock(r *ThreatIntelReport) {
 		if s.shield.IsBlocked(ip.IP) {
 			continue
 		}
-		if err := s.shield.BlockIP(ip.IP); err != nil {
+		durationMin, offense, err := s.shield.BlockIPAuto(ip.IP)
+		if err != nil {
 			slog.Warn("Intel auto-block failed", "ip", ip.IP, "err", err)
 			continue
 		}
@@ -350,21 +351,24 @@ func (s *ThreatIntelService) applyAutoBlock(r *ThreatIntelReport) {
 		slog.Warn("Intel: IP auto-blocked",
 			"ip", ip.IP, "org", ip.Organization, "country", ip.CountryCode,
 			"hits", ip.Total, "err_rate", ip.ErrorRate, "router", ip.TopRouter,
+			"duration_min", durationMin, "offense", offense,
 		)
 		if s.notifier != nil && s.notifier.Enabled() {
 			payload := telegram.AutoBlockAlert{
-				IP:          ip.IP,
-				ServiceName: ip.TopRouter,
-				Severity:    10,
-				Reasoning:   ip.Reasoning,
-				CountryCode: ip.CountryCode,
-				CountryName: ip.CountryName,
-				City:        ip.City,
-				TopRouter:   ip.TopRouter,
-				Hits:        ip.Total,
-				Count4xx:    ip.Count4xx,
-				Count5xx:    ip.Count5xx,
-				ErrorRate:   ip.ErrorRate,
+				IP:           ip.IP,
+				ServiceName:  ip.TopRouter,
+				Severity:     10,
+				Reasoning:    ip.Reasoning,
+				DurationMin:  durationMin,
+				OffenseCount: offense,
+				CountryCode:  ip.CountryCode,
+				CountryName:  ip.CountryName,
+				City:         ip.City,
+				TopRouter:    ip.TopRouter,
+				Hits:         ip.Total,
+				Count4xx:     ip.Count4xx,
+				Count5xx:     ip.Count5xx,
+				ErrorRate:    ip.ErrorRate,
 			}
 			if err := s.notifier.SendAutoBlockAlert(payload); err != nil {
 				slog.Warn("Intel auto-block Telegram alert failed", "ip", ip.IP, "err", err)

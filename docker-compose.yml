@@ -71,6 +71,12 @@ services:
       # Comma-separated additional ASN numbers never to auto-block. Appended to
       # the built-in CDN/anti-DDoS allowlist (Cloudflare, Akamai, Google, etc.).
       JANUS_INTEL_AUTOBLOCK_ASN_ALLOWLIST: ${JANUS_INTEL_AUTOBLOCK_ASN_ALLOWLIST:-}
+      # Progressive block durations (minutes) for AUTO-blocks only. Manual blocks
+      # are always permanent. 1st block uses BASE; each repeat in 24h adds STEP;
+      # capped at MAX. Default: 30 min → +30 per offense, cap 24h.
+      JANUS_BLOCK_BASE_MIN: ${JANUS_BLOCK_BASE_MIN:-30}
+      JANUS_BLOCK_STEP_MIN: ${JANUS_BLOCK_STEP_MIN:-30}
+      JANUS_BLOCK_MAX_MIN: ${JANUS_BLOCK_MAX_MIN:-1440}
     volumes:
       - /opt/janus/logs:/logs
       - /opt/janus/configs:/configs

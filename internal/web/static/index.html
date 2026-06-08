@@ -462,7 +462,7 @@ async function loadShield() {
     _immuneIPs = new Set(data.immune_ips ?? []);
     renderTrustedPills(wlRes?.ok ? await wlRes.json().catch(() => []) : (data.immune_ips ?? []));
     renderAdminPills(data.admin_whitelist ?? []);
-    renderShieldList(data.blocked_ips ?? [], data.activity ?? {});
+    renderShieldList(data.blocked_ips ?? [], data.activity ?? {}, data.blocked_entries ?? []);
   } catch (e) {
     el.innerHTML = `<div class="text-xs text-red-400">Failed to load: ${esc(e.message)}</div>`;
   }
@@ -1349,7 +1349,7 @@ async function fetchExecutiveSummary() {
 }
 
 // ── Shield management ─────────────────────────────────────────────────────
-function renderShieldList(ips, activity) {
+function renderShieldList(ips, activity, entries = []) {
   const el = document.getElementById('shield-list');
   if (!ips || !ips.length) {
     el.innerHTML = `<div class="rounded-lg border border-emerald-900 bg-emerald-950/40 px-4 py-3 text-sm text-emerald-400">
@@ -1358,6 +1358,10 @@ function renderShieldList(ips, activity) {
     return;
   }
 
+  // Build a lookup of rich block entries (blocked_at, expires_at) keyed by IP.
+  const entryByIP = {};
+  for (const e of entries) entryByIP[e.ip] = e;
+
   el.innerHTML = ips.map(ip => {
     const act = (activity && activity[ip]) ? activity[ip] : null;
     const buckets = act?.hit_buckets ?? [];
@@ -1365,6 +1369,20 @@ function renderShieldList(ips, activity) {
     const verdict = act?.verdict ?? '';
     const label   = act?.verdict_label ?? (verdict ? '' : 'REVIEWING');
     const reason  = act?.verdict_reasoning ?? '';
+
+    const entry = entryByIP[ip];
+    const blockedAt = entry?.blocked_at ? new Date(entry.blocked_at) : null;
+    const expiresAt = entry?.expires_at ? new Date(entry.expires_at) : null;
+    const isPermanent = entry && !entry.expires_at;
+    const ago = blockedAt ? formatAgo(blockedAt) : '';
+    const expiry = isPermanent
+      ? '<span class="text-amber-400">permanent</span>'
+      : (expiresAt ? `expires ${formatIn(expiresAt)}` : '');
+    const sourceTag = entry?.source === 'auto'
+      ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/40 text-indigo-300 uppercase tracking-wide">auto</span>'
+      : entry?.source === 'manual'
+        ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-700/40 text-gray-400 uppercase tracking-wide">manual</span>'
+        : '';
 
     const labelColor = {
       'PERSISTENT ATTACKER': 'bg-red-900 text-red-300',
@@ -1386,7 +1404,10 @@ function renderShieldList(ips, activity) {
     return `
       <div class="rounded-lg border border-red-900 bg-gray-900 px-4 py-3 space-y-2">
         <div class="flex items-center justify-between gap-4">
-          <span class="text-sm font-mono text-red-300 shrink-0">${esc(ip)}</span>
+          <div class="flex items-center gap-3 shrink-0">
+            <span class="text-sm font-mono text-red-300">${esc(ip)}</span>
+            ${sourceTag}
+          </div>
           <div class="flex items-center gap-3 flex-wrap justify-end">
             ${label ? `<span class="text-[10px] px-2 py-0.5 rounded uppercase tracking-wide ${labelColor}">${esc(label)}</span>` : ''}
             <span class="text-xs text-gray-600">${total} hits/30m</span>
@@ -1397,9 +1418,33 @@ function renderShieldList(ips, activity) {
             </button>
           </div>
         </div>
+        ${(ago || expiry) ? `<div class="text-xs text-gray-500 pl-1 flex items-center gap-3">
+          ${ago ? `<span>blocked ${ago}</span>` : ''}
+          ${expiry ? `<span>${expiry}</span>` : ''}
+          ${entry?.duration_min ? `<span class="text-gray-600">(${entry.duration_min} min)</span>` : ''}
+        </div>` : ''}
         ${reason ? `<p class="text-xs text-gray-600 pl-1">AI: ${esc(reason)}</p>` : ''}
       </div>`;
   }).join('');
+}
+
+// formatAgo: "3m ago" / "2h ago" / "5d ago" for past timestamps.
+function formatAgo(d) {
+  const s = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+// formatIn: "in 12m" / "in 2h" / "in 1d" for future timestamps.
+function formatIn(d) {
+  const s = Math.floor((d.getTime() - Date.now()) / 1000);
+  if (s <= 0) return 'expired';
+  if (s < 60) return `in <1m`;
+  if (s < 3600) return `in ${Math.floor(s / 60)}m`;
+  if (s < 86400) return `in ${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+  return `in ${Math.floor(s / 86400)}d`;
 }
 
 async function blockIP(ip, btn) {

@@ -299,16 +299,22 @@ func (w *AIAuditWorker) fireThreatAlerts(ai *domain.AIInsights) {
 
 		// Auto-block: only when severity is critical AND a suspected IP is known.
 		if w.shield != nil && ai.Severity >= w.autoBlockMin && alert.SuspectedIP != "" {
-			if err := w.shield.BlockIP(alert.SuspectedIP); err != nil {
+			durationMin, offense, err := w.shield.BlockIPAuto(alert.SuspectedIP)
+			if err != nil {
 				slog.Warn("Shield: auto-block failed", "ip", alert.SuspectedIP, "err", err)
 			} else {
-				slog.Warn("Shield: IP auto-blocked", "ip", alert.SuspectedIP, "service", alert.ServiceName)
+				slog.Warn("Shield: IP auto-blocked",
+					"ip", alert.SuspectedIP, "service", alert.ServiceName,
+					"duration_min", durationMin, "offense", offense,
+				)
 				if w.notifier != nil && w.notifier.Enabled() {
 					payload := telegram.AutoBlockAlert{
-						IP:          alert.SuspectedIP,
-						ServiceName: alert.ServiceName,
-						Severity:    ai.Severity,
-						Reasoning:   alert.Reasoning,
+						IP:           alert.SuspectedIP,
+						ServiceName:  alert.ServiceName,
+						Severity:     ai.Severity,
+						Reasoning:    alert.Reasoning,
+						DurationMin:  durationMin,
+						OffenseCount: offense,
 					}
 					if w.enrichIP != nil {
 						ctx := w.enrichIP(alert.SuspectedIP)
