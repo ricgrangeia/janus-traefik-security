@@ -101,16 +101,34 @@ func (w *BanReviewWorker) GetVerdict(ip string) (IPVerdict, bool) {
 }
 
 func (w *BanReviewWorker) reviewAll(ctx context.Context) {
-	ips := w.shield.ListBlocked()
-	if len(ips) == 0 {
+	entries := w.shield.ListBlockedDetailed()
+	if len(entries) == 0 {
+		return
+	}
+
+	// Skip auto-blocks (have ExpiresAt). Those are governed by BlockExpiryWorker
+	// and the progressive-duration scheme — ban-review would race with that
+	// mechanism and prematurely unblock attackers who simply pause for 30 min.
+	// Only PERMANENT (manual) blocks get AI review.
+	permanent := make([]string, 0, len(entries))
+	autoSkipped := 0
+	for _, e := range entries {
+		if e.ExpiresAt != nil {
+			autoSkipped++
+			continue
+		}
+		permanent = append(permanent, e.IP)
+	}
+	if len(permanent) == 0 {
+		slog.Debug("ban review: nothing to review (all blocks are auto/expiring)", "auto_skipped", autoSkipped)
 		return
 	}
 
 	// Filter to IPs not reviewed within reviewMinAge — most banned IPs go silent
 	// after the block, so re-asking the LLM every 30min is pure waste.
-	due := make([]string, 0, len(ips))
+	due := make([]string, 0, len(permanent))
 	w.mu.RLock()
-	for _, ip := range ips {
+	for _, ip := range permanent {
 		v, ok := w.verdicts[ip]
 		if !ok || time.Since(v.ReviewedAt) >= reviewMinAge {
 			due = append(due, ip)
@@ -119,11 +137,11 @@ func (w *BanReviewWorker) reviewAll(ctx context.Context) {
 	w.mu.RUnlock()
 
 	if len(due) == 0 {
-		slog.Debug("ban review: nothing due", "blocked_count", len(ips))
+		slog.Debug("ban review: nothing due", "permanent_count", len(permanent), "auto_skipped", autoSkipped)
 		return
 	}
-	skipped := len(ips) - len(due)
-	slog.Info("ban review: reviewing due IPs", "due", len(due), "skipped_recent", skipped)
+	skipped := len(permanent) - len(due)
+	slog.Info("ban review: reviewing due IPs", "due", len(due), "skipped_recent", skipped, "skipped_auto", autoSkipped)
 
 	// Throttle between LLM calls so a long blocklist does not saturate vLLM.
 	for i, ip := range due {
