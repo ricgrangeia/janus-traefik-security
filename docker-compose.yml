@@ -60,6 +60,12 @@ services:
       JANUS_ADMIN_PASSWORD_HASH: ${JANUS_ADMIN_PASSWORD_HASH}
       # Optional bearer token for scripted API access (Authorization: Bearer ...).
       JANUS_API_TOKEN: ${JANUS_API_TOKEN:-}
+      # Self-heal: on every (re)start, detect our own public IP (via an external
+      # echo service) and auto-trust it (admin whitelist + shield immunity).
+      # Fixes lockouts from a dynamic ISP IP — just restart the container to
+      # recover access. Only makes sense when you access the dashboard from
+      # the same network Janus is exposed on (e.g. a home/self-hosted setup).
+      JANUS_AUTO_WHITELIST_OWN_IP: ${JANUS_AUTO_WHITELIST_OWN_IP:-false}
       # Threat-Intel scheduler. 0 = manual-only (default). 480 = run every 8 min.
       JANUS_INTEL_INTERVAL: ${JANUS_INTEL_INTERVAL:-0}
       # Auto-block IPs that the Intelligence cycle labels HOSTILE.

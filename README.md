@@ -127,6 +127,7 @@ open http://localhost:9090
 | `JANUS_SHIELD_PATH` | `/rules/blocklist.yaml` | Traefik dynamic-config blocklist file |
 | `JANUS_AUTO_BLOCK_MIN` | `10` | Min AI severity (1–10) to trigger auto-block |
 | `JANUS_ACCESS_LOG_PATH` | `/logs/access.log` | Traefik JSON access log path |
+| `JANUS_AUTO_WHITELIST_OWN_IP` | `false` | On every (re)start, auto-detect Janus's own public IP and add it to the admin whitelist + trusted whitelist. See [Self-Heal](#self-heal-recovering-from-a-dynamic-ip) below |
 
 ### Threat Intelligence
 
@@ -273,6 +274,21 @@ traefik.http.routers.myapp.middlewares=janus-shield@file
 ```
 
 ---
+
+## Self-Heal (recovering from a dynamic IP)
+
+If your ISP hands out a dynamic public IP that changes every few months, you can end up locked out of the admin routes / dashboard after it rotates — the old IP is still in the whitelists, the new one isn't.
+
+Set `JANUS_AUTO_WHITELIST_OWN_IP=true` to fix this: on every start (including a plain container restart), Janus queries an external IP-echo service (`api.ipify.org`, falling back to `ifconfig.me` / `icanhazip.com`) to learn the public IP it's reachable from, then adds it to:
+
+- the **admin whitelist** (`janus-admin-whitelist@file` Traefik `ipAllowList`)
+- the **trusted whitelist** (Shield immunity — never auto-blocked or flagged HOSTILE)
+
+So when you get locked out, just restart the `janus` container (e.g. the Restart button in Portainer) — no config editing, no remembering IPs.
+
+> This only makes sense when you access the dashboard from the same network Janus is exposed on (the common case for a home/self-hosted deployment) — the IP the echo service sees is the network's public IP, not your personal machine's IP if you're connecting remotely from elsewhere.
+
+Old IPs are never removed automatically. Prune stale entries yourself from the **Shield** tab — each admin-whitelist and trusted-whitelist IP has a **×** button to remove it.
 
 ## GeoIP Setup (Threat Intelligence)
 

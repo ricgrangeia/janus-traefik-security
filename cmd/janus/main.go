@@ -22,6 +22,7 @@ import (
 	"github.com/janus-project/janus/internal/infrastructure/geoip"
 	"github.com/janus-project/janus/internal/infrastructure/llm"
 	janusLogs "github.com/janus-project/janus/internal/infrastructure/logs"
+	"github.com/janus-project/janus/internal/infrastructure/netinfo"
 	"github.com/janus-project/janus/internal/infrastructure/storage"
 	"github.com/janus-project/janus/internal/infrastructure/telegram"
 	traefikinfra "github.com/janus-project/janus/internal/infrastructure/traefik"
@@ -58,8 +59,9 @@ type config struct {
 	GeoIPPath         string
 	GeoIPASNPath      string
 	WhitelistPath     string
-	AdminPasswordHash string
-	APIToken          string
+	AdminPasswordHash  string
+	APIToken           string
+	AutoWhitelistOwnIP bool
 
 	IntelAutoBlock          bool
 	IntelAutoBlockMinErr    float64       // 0.0-1.0; minimum error rate to auto-block
@@ -139,6 +141,26 @@ func main() {
 			StepMin: cfg.BlockStepMin,
 			MaxMin:  cfg.BlockMaxMin,
 		})
+
+	// ── Self-heal: re-trust our own public IP on every (re)start ─────────
+	// Fixes lockouts caused by a dynamic ISP IP changing between restarts —
+	// restarting the container is enough to recover admin access.
+	if cfg.AutoWhitelistOwnIP {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ip, err := netinfo.DiscoverPublicIP(ctx, 5*time.Second)
+		cancel()
+		if err != nil {
+			slog.Warn("auto-whitelist-own-ip: could not discover public IP", "err", err)
+		} else {
+			if err := shield.AddAdminIP(ip); err != nil {
+				slog.Warn("auto-whitelist-own-ip: failed to add to admin whitelist", "ip", ip, "err", err)
+			}
+			if err := whitelist.Add(ip); err != nil {
+				slog.Warn("auto-whitelist-own-ip: failed to add to trusted whitelist", "ip", ip, "err", err)
+			}
+			slog.Info("auto-whitelist-own-ip: trusted own public IP", "ip", ip)
+		}
+	}
 
 	// ── Shared Telegram notifier (used by both AI worker and intel service) ──
 	var notifier *telegram.Notifier
@@ -405,6 +427,7 @@ func loadConfig() config {
 		WhitelistPath:     getEnv("JANUS_WHITELIST_PATH", "/app/data/whitelist.json"),
 		AdminPasswordHash:      getEnv("JANUS_ADMIN_PASSWORD_HASH", ""),
 		APIToken:               getEnv("JANUS_API_TOKEN", ""),
+		AutoWhitelistOwnIP:     getEnvBool("JANUS_AUTO_WHITELIST_OWN_IP", false),
 		IntelAutoBlockMinErr:   0.8, // bumped from 0.5 — the LLM's real attackers showed >0.9 error rates
 		IntelAutoBlockMax:      3,
 		IntelAutoBlockMinHits:  20,
@@ -492,6 +515,14 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if v == "" {
+		return fallback
+	}
+	return v == "true" || v == "1" || v == "yes"
 }
 
 // runHashPassword reads a password from stdin and prints a PHC argon2id hash.
