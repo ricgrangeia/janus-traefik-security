@@ -29,7 +29,7 @@ func NewClient(baseURL, model, apiKey string) *Client {
 		apiKey:  apiKey,
 		httpClient: &http.Client{
 			// AI calls can be slow with large contexts — allow up to 2 minutes.
-			Timeout: 120 * time.Second,
+			Timeout: 300 * time.Second,
 		},
 	}
 }
