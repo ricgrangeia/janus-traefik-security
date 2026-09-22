@@ -28,8 +28,8 @@ func NewClient(baseURL, model, apiKey string) *Client {
 		model:   model,
 		apiKey:  apiKey,
 		httpClient: &http.Client{
-			// AI calls can be slow with large contexts — allow up to 2 minutes.
-			Timeout: 120 * time.Second,
+			// AI calls can be slow with large contexts — allow up to 5 minutes.
+			Timeout: 300 * time.Second,
 		},
 	}
 }
@@ -53,8 +53,9 @@ func (c *Client) Chat(systemPrompt, userContent string) (reply string, usage Usa
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userContent},
 		},
-		Temperature: 0.1,  // low temperature for deterministic security analysis
-		MaxTokens:   4096, // enough for structured JSON response
+		Temperature:        0.1,  // low temperature for deterministic security analysis
+		MaxTokens:          4096, // enough for structured JSON response
+		ChatTemplateKwargs: map[string]bool{"enable_thinking": false},
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -99,6 +100,11 @@ type chatRequest struct {
 	Messages    []message `json:"messages"`
 	Temperature float64   `json:"temperature"`
 	MaxTokens   int       `json:"max_tokens"`
+	// ChatTemplateKwargs disables the model's "thinking" step (Qwen3-style
+	// reasoning template). Without this, a reasoning-capable backend can
+	// spend the entire MaxTokens budget on reasoning_content and return an
+	// empty content field, which ParseResponse then fails to parse as JSON.
+	ChatTemplateKwargs map[string]bool `json:"chat_template_kwargs,omitempty"`
 }
 
 type message struct {
