@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -87,9 +89,10 @@ type ThreatIntelService struct {
 	notifier       ThreatNotifier
 	interval       time.Duration // 0 = scheduler disabled (manual-only via /api/v1/intel/analyze)
 
-	mu      sync.RWMutex
-	latest  *ThreatIntelReport
-	running bool // guard against concurrent analysis
+	mu          sync.RWMutex
+	latest      *ThreatIntelReport
+	running     bool   // guard against concurrent analysis
+	lastCtxHash string // hash do ultimo contexto enviado ao LLM, para nao repetir a chamada
 }
 
 // NewThreatIntelService creates the service. analyzer, geo, and client are required.
@@ -283,13 +286,38 @@ func (s *ThreatIntelService) analyze() error {
 		trustedIPs = s.whitelist.List()
 	}
 	ctx := buildIntelContext(profiles, s.analyzer.UniqueIPCount(), trustedIPs)
+
+	// O LLM e servido por um slot unico e partilhado. Se o contexto e
+	// exatamente o mesmo do ciclo anterior, a resposta seria igual -- e a
+	// chamada so serviria para ocupar o slot durante minutos, atrasando tudo
+	// o resto (inclusive pedidos interativos, que chegam a expirar a espera).
+	ctxHash := hashIntelContext(ctx)
+	s.mu.RLock()
+	unchanged := s.lastCtxHash != "" && s.lastCtxHash == ctxHash && s.latest != nil
+	s.mu.RUnlock()
+	if unchanged {
+		slog.Info("threat intel: contexto inalterado desde o ciclo anterior, LLM nao chamado")
+		return nil
+	}
+
 	reply, usage, err := s.client.Chat(llm.IntelSystemPrompt, ctx)
 	if err != nil {
+		// O LLM estar indisponivel NAO pode significar um ciclo sem bloquear
+		// nada: era exatamente isso que acontecia antes -- "threat intel
+		// analysis skipped" e zero IPs bloqueados, precisamente quando o
+		// sistema esta sob carga. Cai-se num veredito aritmetico, deliberadamente
+		// mais estreito do que o do modelo.
+		slog.Warn("threat intel: LLM indisponivel, a aplicar veredito deterministico",
+			"err", err)
+		s.blockObviouslyHostile(profiles, start)
 		return fmt.Errorf("LLM intel: %w", err)
 	}
 
 	report, err := parseIntelResponse(reply, profiles)
 	if err != nil {
+		slog.Warn("threat intel: resposta do LLM ilegivel, a aplicar veredito deterministico",
+			"err", err)
+		s.blockObviouslyHostile(profiles, start)
 		return fmt.Errorf("parse intel response: %w", err)
 	}
 	report.UniqueIPs = s.analyzer.UniqueIPCount()
@@ -306,12 +334,60 @@ func (s *ThreatIntelService) analyze() error {
 
 	s.mu.Lock()
 	s.latest = report
+	s.lastCtxHash = ctxHash
 	s.mu.Unlock()
 
 	if s.autoBlock && s.shield != nil {
 		s.applyAutoBlock(report)
 	}
 	return nil
+}
+
+// hashIntelContext identifica o contexto enviado ao LLM. E o proprio texto do
+// prompt que se compara, e nao um resumo dos dados: se o texto e igual, a
+// pergunta e a mesma, sem depender de saber que campos entram nele.
+func hashIntelContext(ctx string) string {
+	sum := sha256.Sum256([]byte(ctx))
+	return hex.EncodeToString(sum[:])
+}
+
+// blockObviouslyHostile bloqueia o que e hostil por aritmetica, sem opiniao do
+// modelo, para os ciclos em que o LLM nao respondeu.
+//
+// O criterio e de propósito mais estreito do que o do LLM: exige-se ZERO
+// respostas com sucesso. Um cliente legitimo -- por mais erros que gere --
+// acaba por acertar nalguma coisa; centenas de pedidos sem um unico 2xx nao
+// sao um utilizador, sao uma varredura. O que e ambiguo (crawler? monitorizacao?
+// scanner?) fica de fora e espera pelo modelo, que e onde ele vale a pena.
+//
+// Os restantes portoes (taxa de erro minima, numero de hits, allowlist de ASN,
+// imunidade) sao aplicados na mesma pelo applyAutoBlock.
+func (s *ThreatIntelService) blockObviouslyHostile(profiles []IPProfile, start time.Time) {
+	if !s.autoBlock || s.shield == nil {
+		return
+	}
+
+	candidates := make([]IPProfile, 0, len(profiles))
+	for _, p := range profiles {
+		if p.Count2xx > 0 {
+			continue
+		}
+		p.Classification = "HOSTILE"
+		candidates = append(candidates, p)
+	}
+	if len(candidates) == 0 {
+		return
+	}
+
+	slog.Info("threat intel: veredito deterministico",
+		"candidatos", len(candidates), "elapsed_ms", time.Since(start).Milliseconds())
+
+	s.applyAutoBlock(&ThreatIntelReport{
+		TopIPs:      candidates,
+		UniqueIPs:   s.analyzer.UniqueIPCount(),
+		GeneratedAt: time.Now().UTC(),
+		Summary:     "Veredito deterministico (LLM indisponivel): bloqueados apenas IPs sem qualquer resposta com sucesso.",
+	})
 }
 
 // applyAutoBlock blocks every TopIPs entry classified HOSTILE whose error rate
