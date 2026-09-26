@@ -42,6 +42,7 @@ type config struct {
 	VLLMModel         string
 	VLLMAPIKey        string
 	AIAuditInterval   time.Duration
+	ReviewInterval    time.Duration
 	JanusEnv          string
 	KnownMiddlewares  string
 	AITracePath       string
@@ -263,7 +264,7 @@ func main() {
 	// ── Ban review worker (requires AI + tailer) ─────────────────────────
 	var reviewWorker *app.BanReviewWorker
 	if llmClient != nil && logTailer != nil {
-		reviewWorker = app.NewBanReviewWorker(shield, logTailer, llmClient, 30*time.Minute)
+		reviewWorker = app.NewBanReviewWorker(shield, logTailer, llmClient, cfg.ReviewInterval)
 		if notifier != nil {
 			reviewWorker.WithNotifier(notifier)
 		}
@@ -408,6 +409,7 @@ func loadConfig() config {
 		VLLMModel:         getEnv("VLLM_MODEL", "qwen2.5-7b-instruct"),
 		VLLMAPIKey:        getEnv("VLLM_API_KEY", ""),
 		AIAuditInterval:   8 * time.Minute,
+		ReviewInterval:    30 * time.Minute,
 		JanusEnv:          getEnv("JANUS_ENV", "production"),
 		KnownMiddlewares:  getEnv("JANUS_KNOWN_MIDDLEWARES", ""),
 		AITracePath:       getEnv("JANUS_AI_TRACE_PATH", "/logs/ai_audit_trace.json"),
@@ -464,10 +466,8 @@ func loadConfig() config {
 			cfg.IntelAutoBlockMax = n
 		}
 	}
-	if v := os.Getenv("JANUS_INTEL_INTERVAL"); v != "" {
-		if secs, err := strconv.Atoi(v); err == nil && secs >= 60 {
-			cfg.IntelInterval = time.Duration(secs) * time.Second
-		}
+	if secs, ok := intervalEnv("JANUS_THREAT_INTERVAL", "JANUS_INTEL_INTERVAL", 60); ok {
+		cfg.IntelInterval = secs
 	}
 	if v := os.Getenv("JANUS_INTEL_AUTOBLOCK_MIN_HITS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
@@ -496,10 +496,11 @@ func loadConfig() config {
 			cfg.AlertThreshold = f
 		}
 	}
-	if v := os.Getenv("JANUS_AI_INTERVAL"); v != "" {
-		if secs, err := strconv.Atoi(v); err == nil && secs >= 10 {
-			cfg.AIAuditInterval = time.Duration(secs) * time.Second
-		}
+	if secs, ok := intervalEnv("JANUS_AUDITORIA_INTERVAL", "JANUS_AI_INTERVAL", 10); ok {
+		cfg.AIAuditInterval = secs
+	}
+	if secs, ok := intervalEnv("JANUS_BANREVIEW_INTERVAL", "", 60); ok {
+		cfg.ReviewInterval = secs
 	}
 	if v := os.Getenv("TELEGRAM_SEVERITY_THRESHOLD"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 10 {
@@ -508,6 +509,41 @@ func loadConfig() config {
 	}
 	cfg.VLLMEnabled = cfg.VLLMURL != ""
 	return cfg
+}
+
+// intervalEnv le um intervalo em segundos, aceitando o nome antigo enquanto a
+// migracao nao estiver feita em todos os sitios.
+//
+// Renomear uma variavel de ambiente falha em silencio: se o nome novo nao
+// estiver definido, o valor cai para o default e ninguem da por nada ate
+// reparar, semanas depois, que o agendador corre com outra cadencia. Daqui o
+// aviso explicito no log em vez de uma substituicao muda.
+func intervalEnv(name, deprecated string, minSecs int) (time.Duration, bool) {
+	read := func(k string) (time.Duration, bool) {
+		v := os.Getenv(k)
+		if v == "" {
+			return 0, false
+		}
+		secs, err := strconv.Atoi(v)
+		if err != nil || secs < minSecs {
+			slog.Warn("intervalo ignorado: valor invalido ou abaixo do minimo",
+				"var", k, "valor", v, "minimo_segundos", minSecs)
+			return 0, false
+		}
+		return time.Duration(secs) * time.Second, true
+	}
+
+	if d, ok := read(name); ok {
+		return d, true
+	}
+	if deprecated != "" {
+		if d, ok := read(deprecated); ok {
+			slog.Warn("variavel de ambiente antiga ainda em uso -- renomeia-a",
+				"antiga", deprecated, "nova", name)
+			return d, true
+		}
+	}
+	return 0, false
 }
 
 func getEnv(key, fallback string) string {

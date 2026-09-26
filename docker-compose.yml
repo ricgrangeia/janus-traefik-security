@@ -23,7 +23,8 @@ services:
       VLLM_API_URL: ${VLLM_API_URL:-}
       VLLM_MODEL: ${VLLM_MODEL:-qwen2.5-7b-instruct}
       VLLM_API_KEY: ${VLLM_API_KEY:-}
-      JANUS_AI_INTERVAL: ${JANUS_AI_INTERVAL:-60}
+      JANUS_AUDITORIA_INTERVAL: ${JANUS_AUDITORIA_INTERVAL:-1200}
+      JANUS_BANREVIEW_INTERVAL: ${JANUS_BANREVIEW_INTERVAL:-1800}
       # Environment label sent to AI for context ("production", "staging", etc.)
       JANUS_ENV: ${JANUS_ENV:-production}
       # Comma-separated list of middleware names considered "trusted/secure".
@@ -67,7 +68,7 @@ services:
       # the same network Janus is exposed on (e.g. a home/self-hosted setup).
       JANUS_AUTO_WHITELIST_OWN_IP: ${JANUS_AUTO_WHITELIST_OWN_IP:-false}
       # Threat-Intel scheduler. 0 = manual-only (default). 480 = run every 8 min.
-      JANUS_INTEL_INTERVAL: ${JANUS_INTEL_INTERVAL:-0}
+      JANUS_THREAT_INTERVAL: ${JANUS_THREAT_INTERVAL:-0}
       # Auto-block IPs that the Intelligence cycle labels HOSTILE.
       JANUS_INTEL_AUTOBLOCK: ${JANUS_INTEL_AUTOBLOCK:-false}
       # Safety gates for Intel auto-block.

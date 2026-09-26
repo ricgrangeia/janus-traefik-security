@@ -110,7 +110,9 @@ open http://localhost:9090
 | `VLLM_API_URL` | *(empty)* | vLLM base URL — AI features disabled when unset |
 | `VLLM_MODEL` | `qwen2.5-7b-instruct` | Model name to request |
 | `VLLM_API_KEY` | *(empty)* | API key (if required) |
-| `JANUS_AI_INTERVAL` | `60` | AI audit interval in seconds |
+| `JANUS_AUDITORIA_INTERVAL` | `480` | AI audit interval in seconds (was `JANUS_AI_INTERVAL`) |
+| `JANUS_THREAT_INTERVAL` | `0` | Threat intel interval in seconds, 0 = manual only (was `JANUS_INTEL_INTERVAL`) |
+| `JANUS_BANREVIEW_INTERVAL` | `1800` | Ban review interval in seconds |
 | `JANUS_AI_TRACE_PATH` | `/logs/ai_audit_trace.json` | JSONL trace file path |
 
 ### Persistence
